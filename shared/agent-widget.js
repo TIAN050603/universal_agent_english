@@ -3442,21 +3442,9 @@
       "Timer: 00:00",
       "Token usage: waiting for backend token usage"
     ].join("\n"), "agent");
-    setStatus("Quickly checking LLM connection...");
-    const llm = await refreshLlmStatus(LLM_STATUS_TIMEOUT_MS, { quick: true });
+    setStatus("Planning task...");
     if (runtime.activeRunId !== runId) {
       return { accepted: false, message: "Task was cancelled or replaced." };
-    }
-    if (!llm.connected) {
-      const message = noLlmMessage();
-      addMessage("system", message, "system");
-      setStatus(message, true);
-      elements.panel.classList.remove("has-active-task", "is-planning-task");
-      runtime.planningTask = null;
-      runtime.activeRunId = "";
-      transitionConversation("failed", "blocked_no_llm");
-      renderTaskSummary();
-      return { accepted: false, success: false, message: message };
     }
     if (!window.AgentTaskOrchestrator || !window.AgentTaskOrchestrator.startTask) {
       const message = "Agent orchestrator is not loaded; task was not executed.";
@@ -3469,7 +3457,6 @@
       renderTaskSummary();
       return { accepted: false, success: false, message: message };
     }
-    setStatus("LLM connected. Planning task...");
     const taskStartedAtMs = Date.now();
     const taskResult = await window.AgentTaskOrchestrator.startTask(command, {
       backendUrl: (state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, ""),

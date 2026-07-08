@@ -121,7 +121,15 @@ PATIENT_NAME_TO_ID = {
     "赵磊": "P005",
 }
 
-EDITABLE_FIELDS = set(FIELD_SCHEMA.keys())
+DEPRECATED_FIELD_CANONICAL = {
+    "remark": "note",
+    "remarks": "note",
+    "symptoms": "chiefComplaint",
+    "medicalHistory": "pastHistory",
+    "allergyNote": "allergyHistory",
+}
+
+EDITABLE_FIELDS = set(FIELD_SCHEMA.keys()) - set(DEPRECATED_FIELD_CANONICAL.keys())
 INTERNAL_PAGES = {"login", "dashboard", "patientManagement", "patientEditor"}
 ALLOWED_HARNESS_ACTIONS = {
     "fill_input",
@@ -153,10 +161,10 @@ FIELD_ONTOLOGY = {
     "address": ["地址", "住址"],
     "emergencyContact": ["紧急联系人"],
     "emergencyPhone": ["紧急联系人电话", "紧急电话"],
-    "symptoms": ["主诉", "chiefComplaint", "症状", "当前症状"],
-    "allergyNote": ["过敏史", "allergyHistory", "过敏说明"],
-    "medicalHistory": ["既往史", "病史", "既往病史"],
-    "remark": ["备注"],
+    "chiefComplaint": ["主诉", "chiefComplaint", "chief complaint", "症状", "当前症状", "symptoms"],
+    "allergyHistory": ["过敏史", "allergyHistory", "allergy history", "allergyNote", "allergy note", "过敏说明"],
+    "pastHistory": ["既往史", "病史", "既往病史", "medicalHistory", "medical history", "past history"],
+    "note": ["备注", "remark", "remarks", "note", "notes"],
 }
 
 load_dotenv(BACKEND_DIR / ".env")
@@ -1347,6 +1355,8 @@ def normalize_harness_page(page: Any) -> str:
 
 def normalize_harness_field(field: Any) -> str:
     value = str(field or "").strip()
+    if value in DEPRECATED_FIELD_CANONICAL:
+        return DEPRECATED_FIELD_CANONICAL[value]
     if value in EDITABLE_FIELDS:
         return value
     lowered = value.lower()
@@ -1371,17 +1381,23 @@ def normalize_harness_field(field: Any) -> str:
         "visit_type": "visitType",
         "visit type": "visitType",
         "has_allergy": "hasAllergy",
-        "allergy": "allergyNote",
-        "allergy_note": "allergyNote",
-        "allergy note": "allergyNote",
-        "medical_history": "medicalHistory",
-        "medical history": "medicalHistory",
-        "chief complaint": "chiefComplaint",
-        "present illness": "presentIllness",
-        "past history": "pastHistory",
-        "past medical history": "pastHistory",
+        "allergy": "allergyHistory",
+        "allergy_note": "allergyHistory",
+        "allergy note": "allergyHistory",
         "allergy history": "allergyHistory",
         "allergies": "allergyHistory",
+        "symptom": "chiefComplaint",
+        "symptoms": "chiefComplaint",
+        "chief_complaint": "chiefComplaint",
+        "chief complaint": "chiefComplaint",
+        "medical_history": "pastHistory",
+        "medical history": "pastHistory",
+        "past_history": "pastHistory",
+        "past history": "pastHistory",
+        "past medical history": "pastHistory",
+        "present_illness": "presentIllness",
+        "present illness": "presentIllness",
+        "vital_signs": "vitalSigns",
         "vital signs": "vitalSigns",
         "exam summary": "examSummary",
         "orders": "orders",
@@ -1396,9 +1412,9 @@ def normalize_harness_field(field: Any) -> str:
         "phone": "phone",
     }
     if lowered in aliases:
-        return aliases[lowered]
+        return DEPRECATED_FIELD_CANONICAL.get(aliases[lowered], aliases[lowered])
     if normalized_english in aliases:
-        return aliases[normalized_english]
+        return DEPRECATED_FIELD_CANONICAL.get(aliases[normalized_english], aliases[normalized_english])
     canonical_cn_aliases = {
         "主诉": "chiefComplaint",
         "症状描述": "chiefComplaint",
@@ -1424,7 +1440,7 @@ def normalize_harness_field(field: Any) -> str:
     normalized = re.sub(r"[\s:：字段]+", "", value).lower()
     for key, config in FIELD_SCHEMA.items():
         if normalized and normalized == re.sub(r"[\s:：字段]+", "", str(config.get("label") or "")).lower():
-            return key
+            return DEPRECATED_FIELD_CANONICAL.get(key, key)
     return ""
 
 
@@ -1866,24 +1882,20 @@ FIELD_ALIASES: dict[str, list[str]] = {
     "address": ["地址", "居住地址"],
     "emergencyContact": ["紧急联系人"],
     "emergencyPhone": ["紧急联系人电话", "紧急电话", "联系人电话"],
-    "allergyNote": ["过敏史说明", "过敏说明", "过敏备注", "对", "过敏", "allergy note"],
-    "medicalHistory": ["既往病史", "病史", "medical history"],
-    "symptoms": ["主诉/症状描述", "主诉", "症状描述", "症状", "描述"],
-    "remark": ["备注", "说明"],
     "name": ["姓名", "名字", "改名", "改名为", "name", "patient name"],
     "gender": ["性别", "gender", "sex"],
     "department": ["科室", "department"],
     "visitType": ["就诊类型", "visitType", "visit type"],
     "insuranceType": ["医保类型", "insuranceType", "insurance type"],
-    "chiefComplaint": ["主诉", "症状描述", "chiefComplaint", "chief complaint"],
+    "chiefComplaint": ["主诉", "主诉/症状描述", "症状描述", "症状", "描述", "chiefComplaint", "chief complaint", "symptom", "symptoms"],
     "presentIllness": ["现病史", "当前病史", "presentIllness", "present illness"],
-    "pastHistory": ["既往史", "既往病史", "pastHistory", "past history", "past medical history"],
-    "allergyHistory": ["过敏史", "过敏说明", "allergyHistory", "allergy history", "allergies"],
+    "pastHistory": ["既往史", "既往病史", "病史", "pastHistory", "past history", "past medical history", "medicalHistory", "medical history"],
+    "allergyHistory": ["过敏史", "过敏说明", "过敏史说明", "过敏备注", "对", "过敏", "allergyHistory", "allergy history", "allergyNote", "allergy note", "allergies"],
     "vitalSigns": ["生命体征", "体征", "vitalSigns", "vital signs"],
     "diagnosis": ["诊断", "diagnosis"],
-    "examSummary": ["检查检验", "检查", "检验", "examSummary", "exam summary"],
-    "orders": ["医嘱", "处方", "orders", "order", "prescription"],
-    "note": ["备注", "说明", "note", "notes", "clinical note"],
+    "examSummary": ["检查检验", "检查", "检验", "examSummary", "exam summary", "exams", "labs"],
+    "orders": ["医嘱", "处方", "orders", "order", "prescription", "prescriptions"],
+    "note": ["备注", "说明", "remark", "remarks", "note", "notes", "clinical note"],
 }
 
 
@@ -1898,30 +1910,24 @@ CONTRACT_MUTATION_FIELDS = {
     "chiefComplaint",
     "presentIllness",
     "pastHistory",
-    "medicalHistory",
     "allergyHistory",
-    "allergyNote",
     "vitalSigns",
     "diagnosis",
     "examSummary",
     "orders",
     "note",
-    "remark",
 }
 
 CONTRACT_FIELD_ALIASES: dict[str, list[str]] = {
-    "chiefComplaint": ["主诉", "症状描述", "chiefComplaint", "chief complaint"],
+    "chiefComplaint": ["主诉", "症状描述", "主诉/症状描述", "chiefComplaint", "chief complaint", "symptom", "symptoms"],
     "presentIllness": ["现病史", "当前病史", "presentIllness", "present illness"],
-    "pastHistory": ["既往史", "既往病史", "pastHistory", "past history", "past medical history"],
-    "medicalHistory": ["病史", "既往病史", "medicalHistory", "medical history"],
-    "allergyHistory": ["过敏史", "过敏说明", "allergyHistory", "allergy history", "allergies"],
-    "allergyNote": ["过敏史说明", "过敏备注", "allergyNote", "allergy note"],
+    "pastHistory": ["既往史", "既往病史", "病史", "pastHistory", "past history", "past medical history", "medicalHistory", "medical history"],
+    "allergyHistory": ["过敏史", "过敏说明", "过敏史说明", "过敏备注", "allergyHistory", "allergy history", "allergyNote", "allergy note", "allergies"],
     "vitalSigns": ["生命体征", "体征", "vitalSigns", "vital signs"],
     "diagnosis": ["诊断", "diagnosis"],
-    "examSummary": ["检查检验", "检查", "检验", "examSummary", "exam summary"],
-    "orders": ["医嘱", "处方", "orders", "order", "prescription"],
-    "note": ["备注", "说明", "note", "notes", "clinical note"],
-    "remark": ["备注", "说明", "remark"],
+    "examSummary": ["检查检验", "检查", "检验", "examSummary", "exam summary", "exams", "labs"],
+    "orders": ["医嘱", "处方", "orders", "order", "prescription", "prescriptions"],
+    "note": ["备注", "说明", "remark", "remarks", "note", "notes", "clinical note"],
     "phone": ["电话", "手机号", "联系电话", "phone", "phone number", "mobile", "mobile number", "telephone"],
     "birthDate": ["出生日期", "birthDate", "birth date", "date of birth", "dob"],
     "department": ["科室", "department"],
@@ -2346,6 +2352,7 @@ def repair_plan_against_task_contract(plan: list[dict[str, Any]], contract: dict
 
 @timed("target_for_field")
 def target_for_field(field: str) -> dict[str, Any]:
+    field = DEPRECATED_FIELD_CANONICAL.get(field, field)
     return {
         "field": field,
         "selector": field_selector_for_action(field),
