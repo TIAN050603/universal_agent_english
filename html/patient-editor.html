@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clinical Note Revision - Intelligent HIS</title>
+  <link rel="stylesheet" href="../shared/agent-widget.css?v=20260708-formal-his" />
+  <style>
+    :root { --bg:#f3f7fb; --panel:#fff; --soft:#f8fbff; --text:#172033; --muted:#64748b; --line:#d8e1ee; --primary:#2754d8; --dark:#12335f; --success:#047857; --warn:#b45309; --danger:#b42318; --shadow:0 12px 28px rgba(15,23,42,.08); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:"Microsoft YaHei","PingFang SC","Segoe UI",Arial,sans-serif; line-height:1.5; }
+    a { color:inherit; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:16px; min-height:72px; padding:0 28px; background:#fff; border-bottom:1px solid var(--line); }
+    .topbar h1 { margin:0; color:var(--dark); font-size:24px; }
+    .topbar p { margin:3px 0 0; color:var(--muted); font-size:13px; }
+    .top-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .header-meta { display:flex; gap:12px; flex-wrap:wrap; margin:5px 0 0; color:var(--muted); font-size:13px; }
+    .pill { display:inline-flex; align-items:center; min-height:30px; padding:5px 10px; border:1px solid #bfdbfe; border-radius:999px; color:#1d4ed8; background:#eff6ff; font-weight:700; font-size:12px; }
+    .page { width:min(1500px, calc(100% - 32px)); margin:18px auto 48px; }
+    .breadcrumb { margin:0 0 12px; color:var(--muted); font-size:13px; }
+    .summary-bar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; padding:12px 14px; margin-bottom:16px; border:1px solid #bfdbfe; border-radius:8px; background:#eff6ff; color:#1e3a8a; font-weight:700; }
+    .layout { display:grid; grid-template-columns:200px minmax(0,1fr) 330px; gap:16px; align-items:start; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); overflow:hidden; }
+    .card-header { padding:14px 16px; background:var(--soft); border-bottom:1px solid var(--line); }
+    .card-header h2, .card-header h3 { margin:0; color:var(--dark); font-size:17px; }
+    .card-header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .card-body { padding:16px; }
+    .nav-list { display:grid; gap:6px; padding:12px; }
+    .nav-list a { padding:8px 10px; border-radius:6px; text-decoration:none; color:#334155; font-weight:700; font-size:13px; }
+    .nav-list a:hover { background:#edf4ff; color:#1d4ed8; }
+    .grid-2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .field-grid { display:grid; gap:14px; }
+    .field-card { border:1px solid var(--line); border-radius:8px; background:#fff; overflow:hidden; }
+    .field-card header { display:flex; justify-content:space-between; gap:10px; padding:12px 14px; border-bottom:1px solid #e5edf6; background:#fbfdff; }
+    .field-card header strong { color:#0f172a; }
+    .field-card .field-content { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr); gap:12px; padding:12px 14px; }
+    .old-value { min-height:48px; padding:10px; border:1px dashed #cbd5e1; border-radius:6px; background:#f8fafc; color:#334155; white-space:pre-wrap; }
+    label { display:block; margin-bottom:6px; color:#334155; font-weight:700; font-size:13px; }
+    input, select, textarea { width:100%; min-height:40px; border:1px solid #cbd5e1; border-radius:6px; padding:8px 10px; font:inherit; background:#fff; }
+    textarea { min-height:100px; resize:vertical; }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(39,84,216,.12); }
+    button, .btn { display:inline-flex; align-items:center; justify-content:center; min-height:38px; border:1px solid transparent; border-radius:6px; padding:8px 13px; font:inherit; font-size:13px; font-weight:700; text-decoration:none; cursor:pointer; }
+    .btn-primary { background:var(--primary); color:#fff; }
+    .btn-secondary { background:#fff; border-color:#cbd5e1; color:#1f2937; }
+    .btn-danger { background:#fff1f0; border-color:#fda29b; color:var(--danger); }
+    .btn-warning { background:#fff7ed; border-color:#fed7aa; color:#9a3412; }
+    .status-note { padding:11px 13px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#334155; font-size:13px; }
+    .status-note.warn { border-color:#fed7aa; background:#fff7ed; color:var(--warn); }
+    .status-note.success { border-color:#86efac; background:#ecfdf3; color:var(--success); }
+    .right-stack { display:grid; gap:14px; }
+    .status-list { display:grid; gap:8px; font-size:13px; }
+    .status-list div { display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid #eef2f7; padding-bottom:6px; }
+    .context-list { display:grid; gap:8px; color:#334155; font-size:13px; }
+    .context-list div { padding:9px 10px; border:1px solid #e5edf6; border-radius:6px; background:#fbfdff; }
+    .context-list strong { color:#0f172a; }
+    .muted-note { margin:10px 0 0; color:var(--muted); font-size:12px; }
+    .suggestion-empty, .audit-empty { color:var(--muted); font-size:13px; }
+    .audit-list { display:grid; gap:8px; max-height:260px; overflow:auto; }
+    .audit-item { padding:9px; border:1px solid #e5edf6; border-radius:6px; background:#fff; font-size:12px; }
+    .medical-boundary { padding:12px; border:1px solid #fed7aa; border-radius:8px; background:#fff7ed; color:#9a3412; font-size:13px; }
+    .empty-state { padding:28px; display:grid; gap:18px; }
+    .empty-state h2 { margin:0; color:var(--dark); font-size:26px; }
+    .patient-shortcuts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .shortcut-card { border:1px solid var(--line); border-radius:8px; background:#fff; padding:13px; }
+    .dev-panel { margin-top:16px; border:1px dashed #cbd5e1; border-radius:8px; background:#fff; }
+    .dev-panel summary { padding:12px 14px; cursor:pointer; font-weight:800; color:#334155; }
+    .dev-panel .dev-body { padding:0 14px 14px; display:grid; gap:10px; }
+    .dev-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .voice-status { padding:10px; border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; color:#334155; font-size:13px; white-space:pre-wrap; }
+    .his-agent-field-flash { animation:hisAgentFieldFlash 1.6s ease; }
+    .his-agent-save-pulse { animation:hisAgentSavePulse 1.4s ease; }
+    @keyframes hisAgentFieldFlash {
+      0% { box-shadow:0 0 0 0 rgba(39,84,216,.36); border-color:#2754d8; background:#eff6ff; }
+      70% { box-shadow:0 0 0 8px rgba(39,84,216,0); }
+      100% { box-shadow:none; }
+    }
+    @keyframes hisAgentSavePulse {
+      0% { transform:scale(1); box-shadow:0 0 0 0 rgba(4,120,87,.35); }
+      45% { transform:scale(1.02); box-shadow:0 0 0 8px rgba(4,120,87,0); }
+      100% { transform:scale(1); box-shadow:none; }
+    }
+    .hidden-when-empty { display:none; }
+    @media (max-width:1180px) { .layout { grid-template-columns:1fr; } .nav-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:760px) { .topbar { align-items:flex-start; flex-direction:column; padding:16px; } .page { width:min(100% - 20px,1500px); } .grid-2, .field-card .field-content, .patient-shortcuts, .dev-grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body data-page-type="patientEditor">
+  <header class="topbar">
+    <div>
+      <h1>Intelligent Hospital Information System</h1>
+      <p class="header-meta">
+        <span>Current User: Attending Clinician</span>
+        <span>Current Department: General Outpatient</span>
+        <span id="headerCurrentTime">Current Time: -</span>
+        <span>Login Status: Signed In</span>
+      </p>
+    </div>
+    <nav class="top-actions" aria-label="Page Actions">
+      <span class="pill" id="headerLlmStatus">Checking LLM</span>
+      <span class="pill">Signed In</span>
+      <a class="btn btn-secondary" href="dashboard.html">Back to Workspace</a>
+      <a class="btn btn-secondary" href="patient-management.html">Patient Management</a>
+      <a class="btn btn-danger" href="login.html">Log Out</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <div class="breadcrumb" id="breadcrumb">Home / Clinical Note Revision</div>
+    <div id="summaryBar" class="summary-bar"></div>
+    <div id="emptyState" class="card empty-state" hidden></div>
+    <div id="editorShell" class="layout" hidden>
+      <aside class="card">
+        <div class="card-header"><h2>Record Navigation</h2><p>Clinical Revision Workspace</p></div>
+        <nav class="nav-list">
+          <a href="#basic">Basic Patient Information</a>
+          <a href="#visit">Current Visit</a>
+          <a href="#records">Prior Record</a>
+          <a href="#chiefComplaint">Chief Complaint</a>
+          <a href="#presentIllness">Present Illness</a>
+          <a href="#pastHistory">Past History</a>
+          <a href="#allergyHistory">Allergy History</a>
+          <a href="#vitalSigns">Vital Signs</a>
+          <a href="#diagnosis">Diagnosis</a>
+          <a href="#examSummary">Exams / Labs</a>
+          <a href="#orders">Orders / Prescription</a>
+          <a href="#audit">Operation Log</a>
+        </nav>
+      </aside>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Patient Information Editing | Clinical Note Revision</h2>
+          <p>Shows prior record content and the current revision draft. Manual save does not depend on the LLM; Agent writes must come from backend LLM actions.</p>
+        </div>
+        <div class="card-body">
+          <div id="saveStatus" class="status-note">Loading patient data...</div>
+          <section id="basic" class="grid-2" style="margin-top:14px;"></section>
+          <section id="visit" class="grid-2" style="margin-top:14px;"></section>
+          <section id="records" style="margin-top:18px;">
+            <h3>Prior Record and Current Clinical Revision</h3>
+            <div id="clinicalFields" class="field-grid"></div>
+          </section>
+          <div class="top-actions" style="margin-top:16px;">
+            <button type="button" class="btn-primary" id="saveButton">Save / Sync patient-store</button>
+            <button type="button" class="btn-secondary" id="reloadButton">Reload</button>
+            <button type="button" class="btn-warning" id="rollbackAgentButton">Undo Latest Agent Change</button>
+          </div>
+
+          <details class="dev-panel" id="developerPanel">
+            <summary>Developer Debugging (collapsed by default)</summary>
+            <div class="dev-body">
+              <div class="dev-grid">
+                <label>Universal Agent Backend URL<input id="debugBackendUrl" value="" /></label>
+                <label>ASR Service URL<input id="debugAsrUrl" value="" /></label>
+              </div>
+              <div class="top-actions">
+                <button type="button" class="btn-secondary" id="debugVoiceButton">Voice Input</button>
+                <button type="button" class="btn-secondary" id="debugVoiceCheckButton">Check Voice ASR Status</button>
+              </div>
+              <div id="debugVoiceStatus" class="voice-status">The voice debug entry uses the shared voice input controller.</div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <aside class="right-stack">
+        <section class="card">
+          <div class="card-header"><h3>Agent Status Card</h3><p>Use the floating Agent in the lower-right corner for detailed operations.</p></div>
+          <div class="card-body">
+            <div class="status-list" id="statusList"></div>
+            <p class="muted-note">The floating Agent executes page actions only when the LLM is connected; manual save is always available.</p>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-header"><h3>Patient Summary</h3><p>Current patient and visit context</p></div>
+          <div class="card-body"><div class="context-list" id="visitSummary"></div></div>
+        </section>
+        <section class="card">
+          <div class="card-header"><h3>Allergy / Risk Alerts</h3><p>No active allergy alerts.</p></div>
+          <div class="card-body"><div class="context-list" id="riskPanel"></div></div>
+        </section>
+        <section class="card">
+          <div class="card-header"><h3>Exams / Labs</h3><p>Reserved for LIS/PACS integration.</p></div>
+          <div class="card-body"><div class="context-list" id="examPanel"></div></div>
+        </section>
+        <section class="card">
+          <div class="card-header"><h3>Pending Suggested Changes</h3><p>LLM-generated suggestions are confirmed here and are not written automatically.</p></div>
+          <div class="card-body" id="suggestionPanel"><div class="suggestion-empty">No suggestions yet. When the LLM is disconnected, no suggestions or field writes are generated.</div></div>
+        </section>
+        <section class="card" id="audit">
+          <div class="card-header"><h3>Recent Change Log</h3><p>Records oldValue / newValue / source</p></div>
+          <div class="card-body"><div class="audit-list" id="auditList"></div></div>
+        </section>
+        <div class="medical-boundary">The Agent assists with page operations, clinical interview organization, and medical record revision. It does not provide diagnosis, treatment advice, or medication advice.</div>
+      </aside>
+    </div>
+  </main>
+
+  <script src="../shared/runtime-config.js?v=20260708-formal-his"></script>
+  <script src="../shared/patient-field-schema.js?v=20260708-formal-his"></script>
+  <script src="../shared/patient-store.js?v=20260708-formal-his"></script>
+  <script src="../shared/voice-input-controller.js?v=20260708-formal-his"></script>
+  <script src="../shared/patient-editor-action-adapter.js?v=20260708-formal-his"></script>
+  <script src="../shared/ui-action-feedback.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-state-machine.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-input-router.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-scroll-manager.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-task-model.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-flow-trace.js?v=20260708-formal-his"></script>
+  <script src="../shared/generic-browser-agent.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-task-orchestrator.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-widget-bootstrap.js?v=20260708-formal-his"></script>
+  <script src="../shared/agent-widget.js?v=20260708-formal-his"></script>
+  <script>
+    (function () {
+      "use strict";
+      const params = new URLSearchParams(location.search);
+      const runtimeUrls = window.HisRuntimeConfig && window.HisRuntimeConfig.serviceUrls
+        ? window.HisRuntimeConfig.serviceUrls()
+        : {
+          backendUrl: "http://10.26.6.8:31835",
+          asrUrl: "http://10.26.6.8:31272"
+        };
+      const patientId = String(params.get("patientId") || "").toUpperCase();
+      const debugEnabled = params.get("debug") === "1";
+      let patient = patientId ? PatientStore.getPatientById(patientId) : null;
+        let draft = patient ? Object.assign({}, patient) : null;
+        let oldSnapshot = patient ? Object.assign({}, patient) : null;
+        let llmStatus = "unknown";
+        let pendingAgentFieldFlash = null;
+        window.localStorage.setItem("hisDemoAuthenticated", "true");
+        if (!window.localStorage.getItem("hisDemoAuthenticatedAt")) {
+          window.localStorage.setItem("hisDemoAuthenticatedAt", new Date().toISOString());
+        }
+
+      const clinicalKeys = ["chiefComplaint", "presentIllness", "pastHistory", "allergyHistory", "vitalSigns", "diagnosis", "examSummary", "orders", "note"];
+      const basicKeys = ["patientId", "name", "gender", "age", "birthDate", "phone", "idType", "idNumber", "address", "emergencyContact", "emergencyPhone", "insuranceType"];
+      const visitKeys = ["encounterId", "visitDate", "department", "doctor", "visitType", "visitStatus"];
+
+      const nodes = {
+        breadcrumb: document.getElementById("breadcrumb"),
+        summaryBar: document.getElementById("summaryBar"),
+        emptyState: document.getElementById("emptyState"),
+        editorShell: document.getElementById("editorShell"),
+        basic: document.getElementById("basic"),
+        visit: document.getElementById("visit"),
+        clinicalFields: document.getElementById("clinicalFields"),
+        saveStatus: document.getElementById("saveStatus"),
+        statusList: document.getElementById("statusList"),
+        visitSummary: document.getElementById("visitSummary"),
+        riskPanel: document.getElementById("riskPanel"),
+        examPanel: document.getElementById("examPanel"),
+        auditList: document.getElementById("auditList"),
+        headerLlmStatus: document.getElementById("headerLlmStatus"),
+        headerCurrentTime: document.getElementById("headerCurrentTime"),
+        developerPanel: document.getElementById("developerPanel"),
+        debugVoiceStatus: document.getElementById("debugVoiceStatus"),
+        debugBackendUrl: document.getElementById("debugBackendUrl"),
+        debugAsrUrl: document.getElementById("debugAsrUrl")
+      };
+
+      function init() {
+        nodes.debugBackendUrl.value = nodes.debugBackendUrl.value || runtimeUrls.backendUrl;
+        nodes.debugAsrUrl.value = nodes.debugAsrUrl.value || runtimeUrls.asrUrl;
+        nodes.developerPanel.hidden = !debugEnabled;
+        refreshClock();
+        window.setInterval(refreshClock, 30 * 1000);
+        if (!patient) renderEmptyState();
+        else renderEditor();
+        bindEvents();
+        refreshLlmStatus();
+        if (window.HisVoiceInputController) {
+          window.HisVoiceInputController.subscribe(function (voiceState) {
+            nodes.debugVoiceStatus.textContent = voiceState.message || "Voice status updated.";
+            renderStatus(voiceState);
+          });
+        }
+      }
+
+      function renderEmptyState() {
+        nodes.breadcrumb.textContent = "Home / Patient Management / No patient selected";
+        nodes.summaryBar.textContent = "No patient selected | Data Source: Browser Workspace | LLM Status: " + labelLlm(llmStatus);
+        nodes.emptyState.hidden = false;
+        nodes.editorShell.hidden = true;
+        const patients = PatientStore.getAllPatients().slice(0, 3);
+        nodes.emptyState.innerHTML = [
+          "<h2>No patient selected</h2>",
+          "<p>Please select a patient from Patient Management before opening the clinical note revision page. Select a patient from Patient Management or open one of the records below.</p>",
+          '<div class="top-actions"><a class="btn btn-primary" href="patient-management.html">Back to Patient Management</a><a class="btn btn-secondary" href="dashboard.html">Back to Workspace</a></div>',
+          '<input id="emptyPatientSearch" type="search" placeholder="Search by name / patientId / phone" aria-label="Search patients" />',
+          '<div class="patient-shortcuts" id="emptyPatientShortcuts">' + patients.map(shortcutCard).join("") + "</div>"
+        ].join("");
+        nodes.emptyState.querySelector("#emptyPatientSearch").addEventListener("input", function (event) {
+          const matches = PatientStore.findPatients(event.target.value).slice(0, 6);
+          nodes.emptyState.querySelector("#emptyPatientShortcuts").innerHTML = matches.map(shortcutCard).join("");
+        });
+      }
+
+      function shortcutCard(item) {
+        return '<article class="shortcut-card"><strong>' + escapeHtml(item.patientId + " " + item.name) + '</strong><p>' + escapeHtml(item.department || "") + '</p><a class="btn btn-secondary" href="patient-editor.html?patientId=' + encodeURIComponent(item.patientId) + '">Open Editor</a></article>';
+      }
+
+      function renderEditor() {
+        nodes.emptyState.hidden = true;
+        nodes.editorShell.hidden = false;
+        nodes.breadcrumb.textContent = "Home / Patient Management / " + patient.patientId + " " + patient.name + " / Current Visit";
+        nodes.summaryBar.innerHTML = [
+          pill(patient.patientId + " " + patient.name),
+          pill(patient.gender + " | " + patient.age + " years old"),
+          pill(patient.department),
+          pill(patient.visitType),
+          pill(patient.visitStatus),
+          pill(patient.insuranceType),
+          pill("Data Source: " + (patient.dataSource || "Browser Workspace")),
+          pill("LLM: " + labelLlm(llmStatus))
+        ].join("");
+        renderInfoGrid(nodes.basic, basicKeys);
+        renderInfoGrid(nodes.visit, visitKeys);
+        renderClinicalFields();
+        renderClinicalContext();
+        renderAudit();
+        renderStatus();
+        nodes.saveStatus.textContent = "Prior record loaded. After editing fields, click Save / Sync.";
+        reapplyPendingAgentFieldFlash();
+      }
+
+      function renderInfoGrid(container, keys) {
+        container.innerHTML = keys.map(function (key) {
+          const field = PatientFieldSchema.getField(key);
+          if (!field) return "";
+          return '<label>' + escapeHtml(field.label) + renderControl(field, draft[key], "info") + "</label>";
+        }).join("");
+      }
+
+      function renderClinicalFields() {
+        nodes.clinicalFields.innerHTML = clinicalKeys.map(function (key) {
+          const field = PatientFieldSchema.getField(key);
+          return [
+            '<article class="field-card" id="' + escapeHtml(key) + '">',
+            '<header><strong>' + escapeHtml(field.label) + '</strong><span>Source: manual input / Agent suggestion pending confirmation</span></header>',
+            '<div class="field-content">',
+            '<div><label>Current medical record content</label><div class="old-value">' + escapeHtml(oldSnapshot[key] || "None") + '</div></div>',
+            '<label>Current clinical revision draft' + renderControl(field, draft[key], "clinical") + '</label>',
+            '</div>',
+            '</article>'
+          ].join("");
+        }).join("");
+      }
+
+      function renderControl(field, value, group) {
+        if (!field.editable) return '<input data-field="' + escapeHtml(field.key) + '" value="' + escapeHtml(value || "") + '" disabled />';
+        const attrs = ' data-field="' + escapeHtml(field.key) + '" data-group="' + escapeHtml(group) + '"';
+        if (field.type === "textarea") return '<textarea' + attrs + '>' + escapeHtml(value || "") + '</textarea>';
+        if (field.type === "select") {
+          return '<select' + attrs + '>' + ['<option value="">Please select</option>'].concat((field.options || []).map(function (option) {
+            return '<option value="' + escapeHtml(option) + '"' + (option === value ? " selected" : "") + '>' + escapeHtml(option) + '</option>';
+          })).join("") + '</select>';
+        }
+        return '<input type="' + (field.type === "date" ? "date" : field.type === "number" ? "number" : "text") + '"' + attrs + ' value="' + escapeHtml(value || "") + '" />';
+      }
+
+      function bindEvents() {
+        document.addEventListener("input", handleFieldInput);
+        document.addEventListener("change", handleFieldInput);
+        document.getElementById("saveButton").addEventListener("click", saveDraft);
+        document.getElementById("reloadButton").addEventListener("click", function () { location.reload(); });
+        document.getElementById("rollbackAgentButton").addEventListener("click", rollbackAgentChange);
+        document.getElementById("debugVoiceButton").addEventListener("click", toggleDebugVoice);
+        document.getElementById("debugVoiceCheckButton").addEventListener("click", checkDebugVoice);
+        window.addEventListener("his-agent-ui-feedback", handleAgentUiFeedback);
+        window.addEventListener("storage", function (event) {
+          if (event.key !== "hisAgentUiFeedback" || !event.newValue) return;
+          try {
+            handleAgentUiFeedback({ detail: JSON.parse(event.newValue) });
+          } catch (error) {}
+        });
+      }
+
+      function handleFieldInput(event) {
+        const target = event.target.closest("[data-field]");
+        if (!target || !draft) return;
+        draft[target.dataset.field] = target.value;
+        nodes.saveStatus.className = "status-note warn";
+        nodes.saveStatus.textContent = "There are unsaved clinical revision drafts.";
+      }
+
+      function saveDraft(meta) {
+        if (!patient || !draft) return;
+        const pendingAgentMeta = window.__pendingHisAgentSaveMeta || null;
+        window.__pendingHisAgentSaveMeta = null;
+        const saveMeta = pendingAgentMeta || (meta && !meta.type ? meta : {});
+        const patch = {};
+        PatientFieldSchema.getEditableFields().forEach(function (field) {
+          if (draft[field.key] !== patient[field.key]) patch[field.key] = draft[field.key];
+        });
+        const result = PatientStore.updatePatient(patient.patientId, patch, Object.assign({
+          actor: "user",
+          source: "manual",
+          pageType: "patientEditor",
+          instruction: "Manual save of clinical note revision",
+          canRollback: false
+        }, saveMeta || {}));
+        if (result.success) {
+          patient = result.patient;
+          draft = Object.assign({}, patient);
+          oldSnapshot = Object.assign({}, patient);
+          nodes.saveStatus.className = "status-note success";
+          nodes.saveStatus.textContent = "Synced to patient-store. Patient Management will show the latest field values.";
+          renderEditor();
+        } else {
+          nodes.saveStatus.className = "status-note warn";
+          nodes.saveStatus.textContent = result.message || "Save failed.";
+        }
+      }
+
+      function handleAgentUiFeedback(event) {
+        const detail = event && event.detail ? event.detail : {};
+        if (detail.patientId && patientId && String(detail.patientId).toUpperCase() !== String(patientId).toUpperCase()) return;
+        if ((detail.kind === "field_updated" || detail.kind === "field_changed") && detail.field) {
+          rememberAgentFieldFlash(detail.field);
+          flashField(detail.field);
+          if (detail.kind === "field_changed") {
+            nodes.saveStatus.className = "status-note warn";
+            nodes.saveStatus.textContent = "Field filled. Waiting for save / sync.";
+          } else {
+            nodes.saveStatus.className = "status-note success";
+            nodes.saveStatus.textContent = "Synced / audit log recorded.";
+          }
+        }
+        if (detail.kind === "patient_saved") {
+          flashSave();
+          nodes.saveStatus.className = "status-note success";
+          nodes.saveStatus.textContent = "Synced / audit log recorded.";
+        }
+      }
+
+      function rememberAgentFieldFlash(field) {
+        pendingAgentFieldFlash = {
+          field: String(field || ""),
+          expiresAt: Date.now() + 2200
+        };
+      }
+
+      function reapplyPendingAgentFieldFlash() {
+        if (!pendingAgentFieldFlash || !pendingAgentFieldFlash.field) return;
+        if (Date.now() > pendingAgentFieldFlash.expiresAt) {
+          pendingAgentFieldFlash = null;
+          return;
+        }
+        window.requestAnimationFrame(function () {
+          if (pendingAgentFieldFlash && Date.now() <= pendingAgentFieldFlash.expiresAt) {
+            flashField(pendingAgentFieldFlash.field);
+          }
+        });
+      }
+
+      function flashField(field) {
+        const control = document.querySelector('[data-field="' + cssEscape(field) + '"]');
+        const card = document.getElementById(field);
+        [control, card].forEach(function (node) {
+          if (!node) return;
+          node.classList.remove("his-agent-field-flash");
+          void node.offsetWidth;
+          node.classList.add("his-agent-field-flash");
+        });
+      }
+
+      function flashSave() {
+        const button = document.getElementById("saveButton");
+        if (!button) return;
+        button.classList.remove("his-agent-save-pulse");
+        void button.offsetWidth;
+        button.classList.add("his-agent-save-pulse");
+      }
+
+      function rollbackAgentChange() {
+        const candidate = PatientStore.getLastAgentRollbackCandidate(patient.patientId);
+        if (!candidate) {
+          nodes.saveStatus.className = "status-note warn";
+          nodes.saveStatus.textContent = "The current patient has no recent Agent change to undo.";
+          return;
+        }
+        const result = PatientStore.rollbackAudit(candidate.audit_id);
+        nodes.saveStatus.className = result.success ? "status-note success" : "status-note warn";
+        nodes.saveStatus.textContent = result.message;
+        patient = PatientStore.getPatientById(patient.patientId);
+        draft = Object.assign({}, patient);
+        oldSnapshot = Object.assign({}, patient);
+        renderEditor();
+      }
+
+      function renderAudit() {
+        const log = PatientStore.getAuditLog(patient ? patient.patientId : "").slice(-8).reverse();
+        nodes.auditList.innerHTML = log.length ? log.map(function (item) {
+          return '<div class="audit-item"><strong>' + escapeHtml(item.fieldLabel || item.field) + '</strong><br />' +
+            escapeHtml(String(item.oldValue || "-")) + ' -> ' + escapeHtml(String(item.newValue || "-")) +
+            '<br /><span class="timestamp">' + escapeHtml((item.timestamp || "").replace("T", " ").slice(0, 19)) + ' / ' + escapeHtml(item.source || "") + ' / ' + escapeHtml(item.actor || "") + '</span></div>';
+        }).join("") : '<div class="audit-empty">NoneOperation Log。</div>';
+      }
+
+      function renderStatus(voiceState) {
+        const activeTask = window.AgentTaskOrchestrator && window.AgentTaskOrchestrator.getSummary ? window.AgentTaskOrchestrator.getSummary() : { hasActiveTask: false };
+        nodes.statusList.innerHTML = [
+          statusRow("LLM Backend", labelLlm(llmStatus)),
+          statusRow("Agent Status", llmStatus === "connected" ? "Executable" : "Paused because LLM is disconnected"),
+          statusRow("Current Task", activeTask.hasActiveTask ? activeTask.status : "-"),
+          statusRow("Data Sync", patient && patient.lastModifiedAt ? "Synced " + patient.lastModifiedAt.replace("T", " ").slice(0, 19) : "Browser Workspace"),
+          statusRow("Actions Entry", "Floating Agent in the lower-right corner")
+        ].join("");
+      }
+
+      function renderClinicalContext() {
+        nodes.visitSummary.innerHTML = [
+          contextRow("Visit", [patient.encounterId, patient.visitDate, patient.visitType].filter(Boolean).join(" / ")),
+          contextRow("Department and Doctor", [patient.department, patient.doctor].filter(Boolean).join(" / ")),
+          contextRow("Latest Chief Complaint", patient.chiefComplaint || "None"),
+          contextRow("Current Diagnosis", patient.diagnosis || "Pending completion")
+        ].join("");
+        nodes.riskPanel.innerHTML = [
+          contextRow("Allergy History", patient.allergyHistory || "No clear allergy history"),
+          contextRow("Past History", patient.pastHistory || patient.medicalHistory || "None"),
+          contextRow("Medication Reminder", "No medication knowledge base alert is active.")
+        ].join("");
+        nodes.examPanel.innerHTML = [
+          contextRow("Exams / Labs", patient.examSummary || "Not yet completed"),
+          contextRow("Imaging", "Reserved for PACS integration."),
+          contextRow("Orders / Prescription", patient.orders || "Not ordered yet")
+        ].join("");
+      }
+
+      async function refreshLlmStatus() {
+        try {
+          const backendBase = (nodes.debugBackendUrl.value || runtimeUrls.backendUrl).replace(/\/+$/, "");
+          const response = await fetch(backendBase + "/api/qwen/test");
+          const data = await response.json().catch(function () { return {}; });
+          llmStatus = response.ok && data.ok ? "connected" : "unavailable";
+        } catch (error) {
+          llmStatus = "disconnected";
+        }
+        nodes.headerLlmStatus.textContent = "LLM: " + labelLlm(llmStatus);
+        if (patient) renderEditor();
+        else renderEmptyState();
+        if (window.HisVoiceInputController) {
+          window.HisVoiceInputController.checkStatus({ asrUrl: nodes.debugAsrUrl.value, llmStatus: llmStatus });
+        }
+      }
+
+      function refreshClock() {
+        const now = new Date();
+        nodes.headerCurrentTime.textContent = "Current Time: " + now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()) + " " + pad(now.getHours()) + ":" + pad(now.getMinutes());
+      }
+
+      async function toggleDebugVoice() {
+        const voice = await window.HisVoiceInputController.toggle({ asrUrl: nodes.debugAsrUrl.value, llmStatus: llmStatus });
+        nodes.debugVoiceStatus.textContent = voice.message;
+      }
+
+      async function checkDebugVoice() {
+        const voice = await window.HisVoiceInputController.checkStatus({ asrUrl: nodes.debugAsrUrl.value, llmStatus: llmStatus });
+        nodes.debugVoiceStatus.textContent = voice.message;
+      }
+
+      function pill(text) { return '<span class="pill">' + escapeHtml(text || "") + '</span>'; }
+      function statusRow(label, value) { return '<div><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "") + '</strong></div>'; }
+      function contextRow(label, value) { return '<div><strong>' + escapeHtml(label) + ':</strong> ' + escapeHtml(value || "") + '</div>'; }
+      function labelLlm(value) { return value === "connected" ? "Connected" : value === "not_configured" ? "Not configured" : "Disconnected"; }
+      function pad(value) { return String(value).padStart(2, "0"); }
+      function cssEscape(value) { return window.CSS && typeof window.CSS.escape === "function" ? window.CSS.escape(value) : String(value).replace(/"/g, '\\"'); }
+      function escapeHtml(value) { return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+
+        window.collectHisPageState = function () {
+          return {
+            pageType: "patientEditor",
+            isLoginPage: false,
+            isInHisContext: true,
+            hisDemoAuthenticated: true,
+            loginState: {
+              authenticated: true,
+              isDemoLoggedIn: true,
+              isInHisContext: true
+            },
+            patientId: patientId,
+          patient: patient,
+          activePatient: patient,
+          selectedPatient: patient ? { patientId: patient.patientId, name: patient.name } : null,
+          draft: draft,
+          fullPatientIndex: PatientStore.getPatientIndex ? PatientStore.getPatientIndex() : PatientStore.getAllPatients(),
+          fieldSchema: PatientFieldSchema.fields,
+          auditLog: PatientStore.getAuditLog(patientId).slice(-10)
+        };
+      };
+
+      window.applyHisAgentAction = function (action) {
+        if (!action || !action.type) return { handled: false };
+        if (window.PatientEditorActionAdapter) {
+          return window.PatientEditorActionAdapter.applyPatientEditorAction(action, {
+            patientId: patientId,
+            refresh: function (nextPatient) {
+              patient = nextPatient || PatientStore.getPatientById(patientId);
+              draft = Object.assign({}, patient);
+              oldSnapshot = Object.assign({}, patient);
+              renderEditor();
+            }
+          });
+        }
+        return { handled: false };
+      };
+
+      init();
+    })();
+  </script>
+</body>
+</html>
