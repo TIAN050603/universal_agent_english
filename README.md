@@ -2,7 +2,7 @@
 
 **HIS-Agent** is an installable research demo for real-time clinical workflow assistance. It turns doctor-patient voice conversations into role-aware transcripts and editable Hospital Information System (HIS) tasks by combining streaming ASR, Diart speaker diarization, and LLM-based semantic role correction.
 
-[Installable Package](#quick-start) | [Reviewer Demo Guide](docs/DEMO.md) | [Evaluation Plan](docs/EVALUATION.md) | [Reports](docs/reports) | [License](#license)
+[Installable Package](#quick-start) | [Reviewer Demo Guide](docs/DEMO.md) | [Evaluation Plan](docs/EVALUATION.md) | [Documentation Map](docs/README.md) | [Reports](docs/reports) | [License](#license)
 
 ## Overview
 
@@ -67,9 +67,11 @@ asr_service/                  Streaming ASR WebSocket service
 diarization_service/          Diart speaker diarization service
 loop-engineering/             Evaluation and regression harnesses
 tests/                        Playwright and voice-case test assets
-docs/                         Reviewer demo guide, evaluation plan, and reports
+docs/                         Reviewer docs, evaluation plan, design notes, and reports
 scripts/                      Utility scripts for local serving and checks
 ```
+
+The repository root is intentionally kept small. Design notes, recording checklists, generated reports, and reviewer documents are organized under [docs/](docs/README.md).
 
 ## Quick Start
 
