@@ -25,7 +25,7 @@ fi
 
 python3 -m venv "$APP_DIR/backend/.venv"
 "$APP_DIR/backend/.venv/bin/pip" install --upgrade pip wheel
-"$APP_DIR/backend/.venv/bin/pip" install -e "$APP_DIR/backend"
+"$APP_DIR/backend/.venv/bin/pip" install fastapi 'uvicorn[standard]' python-dotenv requests
 
 python3 -m venv "$APP_DIR/asr_service/.venv"
 "$APP_DIR/asr_service/.venv/bin/pip" install --upgrade pip wheel
