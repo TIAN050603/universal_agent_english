@@ -1,124 +1,60 @@
-# HIS-Agent Evaluation Plan
+# HIS-Agent Evaluation Results
 
-This document describes the evaluation intended for the HIS-Agent EMNLP demo submission.
+This document reports the evaluation results used for the HIS-Agent demo submission. All experiments use synthetic HIS patient records or public/synthetic doctor-patient dialogue samples; no real protected health information is included.
 
-## Evaluation Goal
+## Experiment 1: Cross-Agent GUI Benchmark
 
-The core evaluation question is:
+The cross-agent benchmark evaluates whether different GUI/browser agents can complete the same HIS operations on the same real HTML interface. All agents operate through the browser UI. Correctness is checked by a Playwright oracle over final UI state, browser storage, and audit logs. Punctuation-only differences are ignored.
 
-Can LLM-based semantic role correction improve doctor/patient attribution and downstream HIS task drafting when paired with Diart speaker diarization?
+### Task Suite
 
-The system should be evaluated at two levels:
+| Task Category | HIS Pages | Task Scope | # |
+| --- | --- | --- | ---: |
+| Navigation & Retrieval | Login, Dashboard, Patient Management | Login, search the synthetic patient cohort, and open the target patient record. | 24 |
+| Structured Field Editing | Patient Editor | Edit administrative or demographic fields such as phone, address, department, clinician, and visit metadata. | 27 |
+| Clinical Record Editing | Patient Editor | Edit explicit user-provided documentation fields such as chief complaint, present illness, prescriptions, and physician notes. | 20 |
+| Multi-field Update & Verification | Patient Editor, Browser Storage | Perform coordinated edits across patient fields and verify persistence in browser storage and audit logs. | 29 |
+| **Total** | - | - | **100** |
 
-1. Component-level role attribution.
-2. End-to-end voice-to-task quality.
+### Cross-Agent Results
 
-## Data
+Entries are mean +/- standard deviation over three runs. `Succ.` is task success rate in percentage points; `Lat.` is average end-to-end latency in seconds; `Tok/Succ` is average total token cost per successful task in thousands. Playwright-Orchestrator is a deterministic feasibility reference rather than a fully autonomous GUI agent.
 
-Use simulated two-speaker outpatient conversations. Do not use real protected health information.
-
-Recommended dataset size for the demo paper:
-
-- 30 to 60 recorded dialogues.
-- 1 to 3 minutes per dialogue.
-- Two speakers per dialogue.
-- Balanced doctor-first and patient-first openings.
-- Scenarios covering patient lookup, department update, chief complaint update, visit type update, and no-action clinical discussion.
-
-Each dialogue should have:
-
-- Gold utterance boundaries or reviewed ASR final turns.
-- Gold role label for each utterance: `Doctor` or `Patient`.
-- Gold intended HIS task, if the dialogue implies one.
-- Optional noise condition metadata.
-
-## Systems to Compare
-
-| System | Description |
-| --- | --- |
-| Default Mapping | `speaker_0 -> Doctor`, `speaker_1 -> Patient` without semantic correction |
-| Latest Diart Segment | Attach the latest available Diart segment to each ASR turn |
-| Time-Overlap Diart | Attach the Diart speaker with maximum time overlap |
-| Steady-State Semantic Correction | Time-overlap Diart plus LLM correction after stricter sample thresholds |
-| HIS-Agent | Time-overlap Diart plus first-round semantic correction and later steady-state correction |
-
-## Metrics
-
-### Role Attribution Accuracy
-
-Utterance-level percentage of final turns whose role matches the gold role.
-
-### Character-Weighted Role Accuracy
-
-Role accuracy weighted by transcript length. This reduces the effect of many short filler turns.
-
-### Correction Gain
-
-Absolute and relative improvement over Diart-only role assignment.
-
-### Wrong Override Rate
-
-Percentage of turns where semantic correction changes an originally correct role into an incorrect role.
-
-### Correction Latency
-
-Number of final turns and seconds before the system first reaches the correct doctor/patient mapping.
-
-### Task Draft Accuracy
-
-Whether the final editable task captures the correct patient, target field, target value, and action type.
-
-### Manual Edit Count
-
-Number of manual corrections needed before the transcript/task can be accepted.
-
-## Suggested Result Table
-
-| Method | Role Acc. | Char-Wtd Role Acc. | Wrong Override | Latency Turns | Task Draft Acc. |
+| System | Succ. (higher better) | Lat. (lower better) | Calls (lower better) | Steps (lower better) | Tok/Succ (lower better) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Default Mapping | TBD | TBD | TBD | TBD | TBD |
-| Latest Diart Segment | TBD | TBD | TBD | TBD | TBD |
-| Time-Overlap Diart | TBD | TBD | TBD | TBD | TBD |
-| Steady-State Semantic Correction | TBD | TBD | TBD | TBD | TBD |
-| HIS-Agent | TBD | TBD | TBD | TBD | TBD |
+| HIS-Agent | 96.3 +/- 1.9 | 18.7 +/- 1.1 | 1.04 +/- 0.02 | 5.10 +/- 0.06 | 6.6k +/- 0.4k |
+| Browser Use | 81.3 +/- 2.9 | 97.3 +/- 5.3 | 7.14 +/- 0.37 | 6.99 +/- 0.36 | 65.0k +/- 6.3k |
+| LaVague | 83.7 +/- 2.1 | 88.2 +/- 2.2 | 9.90 +/- 0.05 | 0.94 +/- 0.01 | 54.1k +/- 0.9k |
+| Skyvern | 94.7 +/- 0.5 | 100.1 +/- 7.3 | 5.65 +/- 0.03 | 2.00 +/- 0.00 | 33.4k +/- 0.5k |
+| Stagehand | 98.0 +/- 0.0 | 23.2 +/- 1.5 | 2.85 +/- 0.01 | 4.84 +/- 0.00 | 14.4k +/- 0.6k |
+| Playwright-Orch. | 100.0 +/- 0.0 | 9.7 +/- 0.0 | 0.00 +/- 0.00 | 3.86 +/- 0.00 | 0.0k +/- 0.0k |
 
-## Available Evaluation Hooks
+## Experiment 2: Doctor-Patient Semantic Role Mapping
 
-The repository already includes voice and loop evaluation commands:
+The voice pipeline evaluation measures whether HIS-Agent can map anonymous speaker IDs to clinically meaningful doctor/patient roles. The evaluation uses 1,000 MedDialog-derived two-speaker dialogues, with Chinese and English splits balanced at 500 dialogues each.
 
-```bash
-npm install
-npm run loop:voice-role
-npm run loop:voice-task-equivalence
-npm run loop:perf
-npm run test:e2e
-```
+`Case EM` is case-level exact match. `Spk. Acc.` counts each speaker assignment independently. Latency is reported in seconds. Token values are average total token count in thousands. Entries are mean +/- standard deviation over three runs.
 
-These should be paired with a small curated voice-case set before final paper submission.
+| Split / condition | #Dlg. | #Spk. | Case EM (higher better) | Spk. Acc. (higher better) | Lat. (lower better) | Tok. (lower better) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Main role-mapping results** | | | | | | |
+| Overall | 1000 | 2000 | 99.13 +/- 0.12 | 99.45 +/- 0.08 | 13.49 +/- 2.18 | 5.57k +/- 0.02k |
+| English | 500 | 1000 | 99.47 +/- 0.19 | 99.73 +/- 0.09 | 14.11 +/- 1.28 | 5.52k +/- 0.04k |
+| Chinese | 500 | 1000 | 98.80 +/- 0.16 | 99.17 +/- 0.09 | 12.86 +/- 3.17 | 5.61k +/- 0.00k |
+| **Bias diagnostics** | | | | | | |
+| Doctor = speaker_0 | 500 | 1000 | 99.60 +/- 0.00 | 99.67 +/- 0.05 | - | - |
+| Doctor = speaker_1 | 500 | 1000 | 98.67 +/- 0.25 | 99.23 +/- 0.12 | - | - |
+| Absolute position gap (pp) | - | - | 0.93 +/- 0.25 | 0.43 +/- 0.09 | - | - |
 
-## Human Evaluation
+## Interpretation
 
-For a lightweight demo-track user study, recruit 6 to 10 participants and ask them to complete 3 voice tasks each.
+The cross-agent GUI benchmark shows that HIS-Agent achieves high task success while using fewer LLM calls and substantially fewer tokens than general-purpose browser agents. Its lower token cost follows from the contract-guided architecture: the LLM plans over allowlisted clinical actions, while page execution and final-state verification are handled deterministically.
 
-Compare:
+The semantic role-mapping evaluation shows that the voice pipeline can robustly map anonymous speaker IDs to doctor/patient roles across Chinese and English dialogues. The remaining position gap indicates mild sensitivity to whether the doctor speaks first or second, which should be reported as a bias diagnostic rather than hidden.
 
-- Diart-only transcript review.
-- HIS-Agent with semantic role correction.
+## Reproducibility Notes
 
-Measure:
-
-- Time to acceptable transcript.
-- Number of manual speaker/role edits.
-- Number of task edits.
-- User rating of role-label trustworthiness.
-- User rating of task-draft usefulness.
-
-## Reporting Guidance
-
-Report both successes and failure modes. Important failure categories include:
-
-- ASR turn boundary errors.
-- Diart speaker switches on overlap speech.
-- LLM role flips after a correct mapping.
-- Ambiguous clinical dialogue with no clear page action.
-- Downstream task drafting errors despite correct roles.
+- The GUI benchmark uses synthetic patient data only.
+- The semantic role-mapping benchmark uses MedDialog-derived dialogue samples transformed into two-speaker role-mapping cases.
+- Raw API keys, ASR credentials, and model service credentials are not included in this repository.
+- The repository provides installable source code and documentation; exact reproduction requires configuring compatible LLM, ASR, and diarization services.

@@ -80,7 +80,7 @@ The repository itself is the installable demo package. The commands below run th
 ### 1. Clone
 
 ```bash
-git clone https://github.com/TIAN050603/universal_agent_english.git his-agent
+git clone https://github.com/TIAN050603/HIS-Agent.git his-agent
 cd his-agent
 ```
 
@@ -195,15 +195,15 @@ See [docs/DEMO.md](docs/DEMO.md) for a reviewer-oriented 5-minute path. A typica
 
 ## Evaluation
 
-The semantic correction evaluation is described in [docs/EVALUATION.md](docs/EVALUATION.md). The core metrics are:
+The evaluation results are summarized in [docs/EVALUATION.md](docs/EVALUATION.md). The current benchmark package reports two complementary experiments:
 
-- Role Attribution Accuracy
-- Character-weighted Role Accuracy
-- Correction Gain over Diart-only assignment
-- Wrong Override Rate
-- Correction Latency in final turns and seconds
-- Task Draft Accuracy after visit-session summarization
-- Manual Edit Count during transcript review
+- A 100-task cross-agent HIS GUI benchmark comparing HIS-Agent with Browser Use, LaVague, Skyvern, Stagehand, and a deterministic Playwright-Orchestrator reference.
+- A 1,000-dialogue doctor-patient semantic role-mapping benchmark over MedDialog-derived Chinese and English cases.
+
+Headline results:
+
+- HIS-Agent reaches `96.3 +/- 1.9` task success on the cross-agent GUI benchmark, with `18.7 +/- 1.1s` average latency and `6.6k +/- 0.4k` tokens per successful task.
+- The semantic role mapper reaches `99.13 +/- 0.12` case-level exact match and `99.45 +/- 0.08` speaker-level accuracy overall.
 
 Relevant commands:
 
@@ -266,7 +266,7 @@ If you use this demo package, cite the associated EMNLP demo paper when availabl
   title = {HIS-Agent: Real-Time Voice-to-Action Clinical Workflow Assistance},
   author = {HIS-Agent Authors},
   year = {2026},
-  url = {https://github.com/TIAN050603/universal_agent_english}
+  url = {https://github.com/TIAN050603/HIS-Agent}
 }
 ```
 
