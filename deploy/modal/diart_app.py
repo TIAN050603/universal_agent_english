@@ -117,7 +117,7 @@ def populate_model_cache() -> dict[str, object]:
     max_containers=1,
 )
 @modal.concurrent(max_inputs=8)
-@modal.asgi_app()
+@modal.asgi_app(requires_proxy_auth=True)
 def diart_web():
     configure_runtime()
     from diarization_service.app.main import app as fastapi_app

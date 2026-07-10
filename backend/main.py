@@ -198,8 +198,16 @@ def get_positive_float_env(name: str, default: float) -> float:
 
 
 def get_diarization_proxy_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
     token = os.getenv("DIARIZATION_PROXY_TOKEN", "").strip()
-    return {DIARIZATION_AUTH_HEADER: token} if token else {}
+    if token:
+        headers[DIARIZATION_AUTH_HEADER] = token
+    modal_key = os.getenv("MODAL_PROXY_TOKEN_ID", "").strip()
+    modal_secret = os.getenv("MODAL_PROXY_TOKEN_SECRET", "").strip()
+    if modal_key and modal_secret:
+        headers["Modal-Key"] = modal_key
+        headers["Modal-Secret"] = modal_secret
+    return headers
 
 
 def diarization_ws_url() -> str:
