@@ -2279,6 +2279,7 @@ http://10.26.6.8:31451/html/login.html?v=20260625-task-telemetry-panel
 - `his-agent-llm-proxy`, `his-agent-backend`, `his-agent-asr`, Nginx, and `certbot.timer` are all enabled and active after a coordinated restart.
 - GPT planner health reports provider `openai`, model `gpt-5.5`, and content `ok`. The ASR bridge reports `qwen3-asr-flash-realtime` over the external realtime API.
 - Internal ports `8000`, `8001`, and `8010` listen only on `127.0.0.1` and are not reachable from the public Internet. UFW allows only `22`, `80`, and `443` inbound.
+- Nginx applies per-IP rate limits to `/api/*` and Diart health checks, plus connection limits to ASR and Diart WebSockets. This protects external model credits without adding a second login prompt to the reviewer-facing demo.
 - The temporary Let's Encrypt certificate is valid through `2026-10-08 10:42:44 UTC`; automated renewal is enabled.
 - Modal Diart uses a T4, CUDA, a persistent model-cache volume, `min_containers=0`, and a 600-second scale-down window. Modal Proxy Auth rejects unauthenticated requests before autoscaling, while a separate app-level token protects the ASGI service inside the container.
 - Direct unauthenticated Modal health requests return `401`. Authenticated requests through the Aliyun backend return `200` with `provider=diart_local`, `device=cuda`, and `num_speakers=2`.
