@@ -20,8 +20,8 @@
     voiceInputStatus: "idle",
     asrStatus: "unknown",
     asrHealthUrl: "",
-    diarizationStatus: "unknown",
-    diarizationProvider: "manual",
+    diarizationStatus: "not_activated",
+    diarizationProvider: "disabled",
     diarizationHealthUrl: "",
     diarizationWebSocketUrl: "",
     diarizationWebSocketStatus: "idle",
@@ -115,7 +115,7 @@
     const capabilities = getBrowserCapabilities();
     const permission = await queryMicrophonePermission();
     const asrStatus = await checkAsrHealth(asrHealthUrl);
-    const diarization = await checkDiarizationHealth(diarizationHealthUrl);
+    const diarization = currentDiarizationState(diarizationHealthUrl);
     const microphoneStatus = detectMicrophoneStatus(permission, capabilities);
     const voiceInputStatus = canAttemptMicrophone(capabilities, microphoneStatus) ? "idle" : "blocked_by_browser";
     const message = buildMessage({ microphonePermission: permission, microphoneStatus: microphoneStatus, asrStatus: asrStatus, llmStatus: settings.llmStatus || state.llmStatus });
@@ -153,7 +153,7 @@
     const capabilities = getBrowserCapabilities();
     const permission = await queryMicrophonePermission();
     const asrStatus = await checkAsrHealth(asrHealthUrl);
-    const diarization = await checkDiarizationHealth(diarizationHealthUrl);
+    const diarization = currentDiarizationState(diarizationHealthUrl);
     emit({
       voiceSupported: capabilities.hasGetUserMedia,
       secureContext: capabilities.isSecureContext,
@@ -244,7 +244,7 @@
   async function start(options) {
     const settings = options || {};
     runtime.activeSettings = settings;
-    const useDiarization = settings.enableDiarization !== false && settings.mode !== "dictation";
+    const useDiarization = settings.enableDiarization === true && settings.mode === "visit_session";
     runtime.sessionId = "voice_" + Date.now().toString(36);
     runtime.turnCounter = 0;
     runtime.partialTurnId = "";
@@ -253,38 +253,41 @@
     const diarizationUrl = (settings.diarizationUrl || DEFAULT_DIARIZATION_URL).replace(/\/+$/, "");
     const asrHealthUrl = asrUrl + "/health";
     const diarizationHealthUrl = diarizationUrl + "/diarization/health";
-    const asrStatus = await checkAsrHealth(asrHealthUrl);
-    const diarizationHealthPromise = useDiarization
-      ? checkDiarizationHealth(diarizationHealthUrl)
-      : Promise.resolve({ status: "disabled", provider: "disabled", message: "dictation mode" });
-    const diarization = useDiarization
-      ? { status: "connecting", provider: "diarization", message: "starting in background" }
-      : { status: "disabled", provider: "disabled", message: "dictation mode" };
     const capabilities = getBrowserCapabilities();
     emit({
       voiceSupported: capabilities.hasGetUserMedia,
       secureContext: capabilities.isSecureContext,
       llmStatus: settings.llmStatus || state.llmStatus,
-      asrStatus: asrStatus,
+      asrStatus: "checking",
       asrHealthUrl: asrHealthUrl,
-      diarizationStatus: diarization.status,
-      diarizationProvider: diarization.provider,
+      diarizationStatus: useDiarization ? "starting" : "not_activated",
+      diarizationProvider: useDiarization ? "diart_local" : "disabled",
       diarizationHealthUrl: diarizationHealthUrl,
       diarizationWebSocketUrl: useDiarization ? toDiarizationWebSocketUrl(diarizationUrl) : "",
-      diarizationWebSocketStatus: "idle",
-      diarizationLastError: diarization.message || "",
+      diarizationWebSocketStatus: useDiarization ? "connecting" : "idle",
+      diarizationLastError: "",
       asrWebSocketStatus: "idle",
       didCallGetUserMedia: false,
       getUserMediaCalledAt: "",
       audioContextState: "",
-      streamTrackCount: 0
+      streamTrackCount: 0,
+      voiceInputStatus: useDiarization ? "starting_diarization" : "checking",
+      message: useDiarization
+        ? "Diart is starting. A cold start can take tens of seconds; wait before speaking."
+        : "Checking ASR service..."
     });
+
+    const asrStatus = await checkAsrHealth(asrHealthUrl);
+    emit({ asrStatus: asrStatus });
 
     if (asrStatus !== "connected") {
       emit({
         message: "ASR service is disconnected, so speech transcription is unavailable. Microphone status remains independent.",
         voiceInputStatus: "blocked_by_asr",
         asrWebSocketStatus: "not_started",
+        diarizationStatus: useDiarization ? "not_activated" : state.diarizationStatus,
+        diarizationProvider: useDiarization ? "disabled" : state.diarizationProvider,
+        diarizationWebSocketStatus: "not_started",
         lastVoiceError: "asr_health_" + asrStatus
       });
       return getState();
@@ -304,6 +307,33 @@
       });
       return getState();
     }
+
+    let diarization = currentDiarizationState(diarizationHealthUrl);
+    if (useDiarization) {
+      emit({
+        diarizationStatus: "starting",
+        diarizationProvider: "diart_local",
+        diarizationWebSocketStatus: "connecting",
+        voiceInputStatus: "starting_diarization",
+        message: "Diart is starting. A cold start can take tens of seconds; wait before speaking."
+      });
+      diarization = await checkDiarizationHealth(diarizationHealthUrl);
+      emit({
+        diarizationStatus: diarization.status,
+        diarizationProvider: diarization.provider,
+        diarizationLastError: diarization.message || ""
+      });
+      if (diarization.status !== "connected" && diarization.status !== "available") {
+        emit({
+          voiceInputStatus: "blocked_by_diarization",
+          diarizationWebSocketStatus: "not_started",
+          lastVoiceError: "diarization_health_" + diarization.status,
+          message: "Diart did not become ready, so the visit session was not started. Retry Start Voice Task."
+        });
+        return getState();
+      }
+    }
+
     try {
       emit({
         message: "Connecting to ASR service...",
@@ -320,7 +350,17 @@
       emit({ asrStatus: "connected", asrWebSocketStatus: "connected" });
 
       if (useDiarization) {
-        startDiarizationInBackground(diarizationUrl, diarizationHealthPromise);
+        const diarizationReady = await startDiarization(diarizationUrl, diarization);
+        if (!diarizationReady) {
+          await cleanup({ skipFinal: true });
+          emit({
+            voiceInputStatus: "blocked_by_diarization",
+            microphoneStatus: "idle",
+            lastVoiceError: "diarization_websocket_failed",
+            message: "Diart could not establish a live speaker-separation connection, so recording was not started."
+          });
+          return getState();
+        }
       }
 
       emit({
@@ -352,8 +392,10 @@
         audioContextState: runtime.audioContext.state || "running",
         streamTrackCount: getStreamTrackCount(runtime.mediaStream),
         asrWebSocketStatus: "connected",
+        diarizationStatus: useDiarization ? "connected" : state.diarizationStatus,
+        diarizationWebSocketStatus: useDiarization ? "connected" : state.diarizationWebSocketStatus,
         message: useDiarization
-          ? "Recording / ASR transcribing; speaker separation status: " + state.diarizationProvider + " / " + state.diarizationStatus + "。"
+          ? "Diart is connected. You can begin the doctor-patient conversation now."
           : "Recording / ASR transcribing."
       });
       return getState();
@@ -415,21 +457,20 @@
     });
   }
 
-  async function startDiarizationInBackground(diarizationUrl, healthPromise) {
+  async function startDiarization(diarizationUrl, diarization) {
     try {
-      const diarization = await healthPromise;
       emit({
         diarizationStatus: diarization.status,
         diarizationProvider: diarization.provider,
         diarizationLastError: diarization.message || ""
       });
-      if (!runtime.websocket) return;
+      if (!runtime.websocket) return false;
       if (diarization.status !== "connected" && diarization.status !== "available") {
         emit({
           diarizationWebSocketStatus: "not_started",
           diarizationLastError: diarization.message || "diarization_unavailable"
         });
-        return;
+        return false;
       }
       runtime.diarizationWebSocket = new WebSocket(toDiarizationWebSocketUrl(diarizationUrl));
       runtime.diarizationWebSocket.binaryType = "arraybuffer";
@@ -439,14 +480,16 @@
       };
       emit({ diarizationWebSocketStatus: "connecting" });
       await waitForWebSocketOpen(runtime.diarizationWebSocket, 60000);
-      if (!runtime.websocket) return;
+      if (!runtime.websocket) return false;
       emit({ diarizationWebSocketStatus: "connected" });
+      return true;
     } catch (error) {
       emit({
         diarizationWebSocketStatus: "failed",
         diarizationLastError: error && error.message ? error.message : String(error || "unknown")
       });
       runtime.diarizationWebSocket = null;
+      return false;
     }
   }
 
@@ -863,6 +906,15 @@
         message: error && error.message ? error.message : String(error || "unknown")
       };
     }
+  }
+
+  function currentDiarizationState(diarizationHealthUrl) {
+    return {
+      provider: state.diarizationProvider || "disabled",
+      status: state.diarizationStatus || "not_activated",
+      message: state.diarizationLastError || "",
+      healthUrl: diarizationHealthUrl || state.diarizationHealthUrl || ""
+    };
   }
 
   function fetchWithTimeout(url, options, timeoutMs) {

@@ -60,8 +60,8 @@
     asrStatus: "Not checked",
     asrWebSocketStatus: "idle",
     microphoneStatus: "unknown",
-    diarizationStatus: "unknown",
-    diarizationProvider: "manual",
+    diarizationStatus: "not_activated",
+    diarizationProvider: "disabled",
     diarizationWebSocketStatus: "idle",
     llmStatus: "disconnected",
     agentMode: "blocked_no_llm",
@@ -84,6 +84,10 @@
   const VIEW_MODES = ["home", "chat", "voice", "status", "examples"];
 
   const state = Object.assign({}, DEFAULT_STATE, loadState());
+  // A persisted "connected" value cannot prove that a scale-to-zero GPU is still warm.
+  state.diarizationStatus = "not_activated";
+  state.diarizationProvider = "disabled";
+  state.diarizationWebSocketStatus = "idle";
   const runtime = {
     websocket: null,
     audioContext: null,
@@ -111,8 +115,8 @@
       },
       diarization: {
         url: ((RUNTIME_URLS.diarizationUrl || RUNTIME_URLS.backendUrl || "").replace(/\/+$/, "")) + "/diarization/health",
-        status: "unknown",
-        error: ""
+        status: "not_activated",
+        error: "Diart starts only after an explicit user action."
       },
       llm: {
         url: (RUNTIME_URLS.backendUrl || "").replace(/\/+$/, "") + "/api/llm/test",
@@ -131,6 +135,8 @@
     topicJumpTimer: null,
     statusRefreshInFlight: false,
     statusRefreshStage: "",
+    diarizationActivationInFlight: false,
+    voiceStartInFlight: false,
     voicePlanMessage: null,
     semanticRoleMapping: {
       initialized: false,
@@ -645,6 +651,7 @@
       '    <div class="his-agent-status-content" id="hisAgentStatusContent"></div>',
       '    <div class="his-agent-actions his-agent-status-actions">',
       '      <button type="button" class="his-agent-button secondary" id="hisAgentRefreshStatusButton">Refresh Status</button>',
+      '      <button type="button" class="his-agent-button primary" id="hisAgentActivateDiarizationButton">Activate Diart</button>',
       "    </div>",
       "  </section>",
       '  <section class="his-agent-view his-agent-examples-view" id="hisAgentExamplesView" data-agent-view="examples" hidden>',
@@ -720,6 +727,7 @@
       voiceView: panel.querySelector("#hisAgentVoiceView"),
       statusContent: panel.querySelector("#hisAgentStatusContent"),
       statusRefreshButton: panel.querySelector("#hisAgentRefreshStatusButton"),
+      activateDiarizationButton: panel.querySelector("#hisAgentActivateDiarizationButton"),
       examplesList: panel.querySelector("#hisAgentExamplesList"),
       home: panel.querySelector("#hisAgentHome"),
       topicGrid: panel.querySelector("#hisAgentTopicGrid"),
@@ -782,6 +790,7 @@
       "voiceView",
       "statusContent",
       "statusRefreshButton",
+      "activateDiarizationButton",
       "examplesList",
       "home",
       "topicGrid",
@@ -932,6 +941,7 @@
     elements.checkConnectionButton.addEventListener("click", checkBackendConnection);
     elements.openHistoryButton.addEventListener("click", openAgentHistory);
     elements.statusRefreshButton.addEventListener("click", showConnectionTopic);
+    elements.activateDiarizationButton.addEventListener("click", activateDiarization);
     elements.topicGrid.addEventListener("click", handleTopicClick);
     elements.examplesList.addEventListener("click", function (event) {
       const button = event.target.closest("[data-example-task]");
@@ -1089,8 +1099,7 @@
     try {
       await Promise.allSettled([
         probeHttpViaRuntime((state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "") + "/api/health", "backendStatus", "backend", HEALTH_STATUS_TIMEOUT_MS),
-        probeHttpViaRuntime((state.asrUrl || DEFAULT_STATE.asrUrl).replace(/\/+$/, "") + "/health", "asrStatus", "asr", HEALTH_STATUS_TIMEOUT_MS),
-        probeDiarization()
+        probeHttpViaRuntime((state.asrUrl || DEFAULT_STATE.asrUrl).replace(/\/+$/, "") + "/health", "asrStatus", "asr", HEALTH_STATUS_TIMEOUT_MS)
       ]);
       runtime.statusRefreshStage = "llm_checking";
       renderStatusView("llm_checking");
@@ -1114,7 +1123,6 @@
     state.llmStatus = "checking";
     state.llmProviderStatus = "checking";
     state.agentMode = "checking";
-    state.diarizationStatus = "checking";
     runtime.serviceDetails.backend = {
       url: (state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "") + "/api/health",
       status: "checking",
@@ -1130,11 +1138,6 @@
       status: "checking",
       error: ""
     };
-    runtime.serviceDetails.diarization = {
-      url: ((state.diarizationUrl || DEFAULT_STATE.diarizationUrl || state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "")) + "/diarization/health",
-      status: "checking",
-      error: ""
-    };
   }
 
   function setStatusRefreshLoading(isLoading) {
@@ -1147,6 +1150,48 @@
     elements.statusRefreshButton.innerHTML = isLoading
       ? '<span class="his-agent-spinner" aria-hidden="true"></span><span>Refreshing...</span>'
       : "Refresh Status";
+  }
+
+  function setDiarizationActivationLoading(isLoading) {
+    if (!elements.activateDiarizationButton) {
+      return;
+    }
+    elements.activateDiarizationButton.disabled = Boolean(isLoading);
+    elements.activateDiarizationButton.classList.toggle("is-loading", Boolean(isLoading));
+    elements.activateDiarizationButton.setAttribute("aria-busy", isLoading ? "true" : "false");
+    elements.activateDiarizationButton.innerHTML = isLoading
+      ? '<span class="his-agent-spinner" aria-hidden="true"></span><span>Starting Diart...</span>'
+      : (connectionDiarizationStatusValue() === "connected" ? "Restart Diart" : "Activate Diart");
+  }
+
+  async function activateDiarization() {
+    if (runtime.diarizationActivationInFlight) {
+      return;
+    }
+    runtime.diarizationActivationInFlight = true;
+    state.diarizationStatus = "starting";
+    state.diarizationProvider = "diart_local";
+    state.diarizationWebSocketStatus = "idle";
+    runtime.serviceDetails.diarization = {
+      url: ((state.diarizationUrl || DEFAULT_STATE.diarizationUrl || state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "")) + "/diarization/health",
+      status: "starting",
+      error: "Cold start in progress. This can take tens of seconds."
+    };
+    setDiarizationActivationLoading(true);
+    renderCompactServiceStatus();
+    setStatus("Diart is starting. A cold start can take tens of seconds; wait for Connected before using it.");
+    try {
+      const result = await probeDiarization();
+      if (result && result.connected) {
+        setStatus("Diart is connected and ready.");
+      } else {
+        setStatus("Diart could not be activated. Review the status details and retry.", true);
+      }
+    } finally {
+      runtime.diarizationActivationInFlight = false;
+      setDiarizationActivationLoading(false);
+      renderCompactServiceStatus();
+    }
   }
 
   function buildConnectionTopicDetails(stage) {
@@ -1180,8 +1225,8 @@
     if (status === "connected" || status === "available") {
       return "connected";
     }
-    if (provider && provider !== "manual" && status === "checking") {
-      return "checking";
+    if (status === "starting" || status === "connecting") {
+      return "starting";
     }
     if (provider && provider !== "manual" && !status) {
       return "connected";
@@ -1199,7 +1244,7 @@
       ? "Quickly checking backend and ASR; this usually completes within a few seconds."
       : details.stage === "llm_checking"
         ? "Backend and ASR responded; running a 5-second quick LLM probe..."
-        : "The following status comes from current runtime-config and browser capability checks.";
+        : "Diart remains off until you click Activate Diart here or Start Voice Task in Visit Session.";
     elements.statusContent.innerHTML = [
       '<div class="his-agent-status-panel">',
       '  <div class="his-agent-status-hint">' + escapeHtml(hint) + '</div>',
@@ -1233,6 +1278,8 @@
     const text = connectionStatusText(value);
     const labels = {
       connected: "Connected",
+      starting: "Starting (cold start)",
+      not_activated: "Not activated",
       llm_enabled: "Executable",
       blocked_no_llm: "Temporarily blocked",
       disconnected: "Disconnected",
@@ -1721,8 +1768,14 @@
   function renderVoiceSessionStatus() {
     if (!elements.voiceStatusCard) return;
     const microphone = normalizedVoiceMicrophoneStatus();
+    const diarization = connectionStatusText(state.diarizationStatus);
+    const diarizationSocket = connectionStatusText(state.diarizationWebSocketStatus);
     let notice = "";
-    if (microphone === "checking") {
+    if (runtime.voiceStartInFlight || diarization === "starting" || diarizationSocket === "starting") {
+      notice = "Diart is starting. A cold start can take tens of seconds. Wait for the ready message before speaking.";
+    } else if (runtime.recording && runtime.voiceMode === "session" && diarization === "connected" && diarizationSocket === "connected") {
+      notice = "Diart is connected. You can begin the doctor-patient conversation now.";
+    } else if (microphone === "checking") {
       notice = "Requesting microphone permission...";
     } else if (microphone === "recording") {
       notice = "Microphone is connected and recording. ASR only handles transcription; page actions still require the LLM and user confirmation.";
@@ -1800,9 +1853,12 @@
   function voiceDiarizationLabel() {
     const provider = String(state.diarizationProvider || "").toLowerCase();
     const status = connectionStatusText(state.diarizationStatus);
-    if (provider.indexOf("diart") >= 0 && (status === "connected" || status === "available")) return "Enabled";
-    if (provider.indexOf("manual") >= 0 || provider.indexOf("disabled") >= 0) return "Manual mode";
-    return "Disabled";
+    const socketStatus = connectionStatusText(state.diarizationWebSocketStatus);
+    if (status === "starting" || socketStatus === "starting") return "Starting...";
+    if (provider.indexOf("diart") >= 0 && status === "connected" && socketStatus === "connected") return "Connected";
+    if (provider.indexOf("diart") >= 0 && status === "connected") return "Ready";
+    if (status === "not_activated" || provider.indexOf("disabled") >= 0) return "Not activated";
+    return "Unavailable";
   }
 
   function renderVoiceSessionSummary() {
@@ -1826,6 +1882,8 @@
     const lower = text.toLowerCase();
     if (!text) return "unknown";
     if (lower === "connected" || lower === "ok" || lower === "available" || text.indexOf("Available") >= 0 || text.indexOf("Connected") >= 0) return "connected";
+    if (lower === "starting" || lower === "connecting" || lower === "cold_starting") return "starting";
+    if (lower === "not_activated" || lower === "disabled") return "not_activated";
     if (lower.indexOf("diart_local") >= 0 && lower.indexOf("connected") >= 0) return "connected";
     if (lower.indexOf("manual") >= 0) return "neutral";
     if (lower === "llm_enabled") return "llm_enabled";
@@ -1855,9 +1913,9 @@
   function connectionStatusClass(value) {
     const text = connectionStatusText(value).toLowerCase();
     if (text === "connected" || text === "llm_enabled" || text === "available" || text === "permission_granted" || text === "recording") return "connected";
-    if (text === "blocked_no_llm" || text === "llm_check_required" || text === "slow" || text === "not_configured" || text === "unknown") return "warning";
+    if (text === "blocked_no_llm" || text === "llm_check_required" || text === "slow" || text === "not_configured" || text === "unknown" || text === "not_activated") return "warning";
     if (text === "permission_prompt" || text === "permission_denied" || text === "insecure_context" || text === "blocked_by_browser" || text === "blocked_by_asr" || text === "unavailable" || text === "unavailable_api" || text === "not_found" || text === "device_busy" || text === "get_user_media_error") return "warning";
-    if (text === "checking" || text === "timeout") return "checking";
+    if (text === "checking" || text === "starting" || text === "timeout") return "checking";
     if (text === "disconnected" || text.indexOf("http_") === 0) return "disconnected";
     return "neutral";
   }
@@ -3855,8 +3913,13 @@
     state.asrStatus = voice.asrStatus || state.asrStatus;
     state.asrWebSocketStatus = voice.asrWebSocketStatus || state.asrWebSocketStatus || "idle";
     state.microphoneStatus = normalizeLiveMicrophoneStatus(voice) || state.microphoneStatus;
-    state.diarizationStatus = voice.diarizationStatus || state.diarizationStatus || "unknown";
-    state.diarizationProvider = voice.diarizationProvider || state.diarizationProvider || "manual";
+    const incomingDiarizationStatus = voice.diarizationStatus || "";
+    const keepExplicitActivation = incomingDiarizationStatus === "not_activated" &&
+      (state.diarizationStatus === "connected" || state.diarizationStatus === "starting");
+    if (!keepExplicitActivation) {
+      state.diarizationStatus = incomingDiarizationStatus || state.diarizationStatus || "not_activated";
+      state.diarizationProvider = voice.diarizationProvider || state.diarizationProvider || "disabled";
+    }
     state.diarizationWebSocketStatus = voice.diarizationWebSocketStatus || state.diarizationWebSocketStatus || "idle";
     runtime.lastAsrEvent = Object.assign({}, runtime.lastAsrEvent || {}, {
       voiceDiagnostic: {
@@ -4710,52 +4773,62 @@
       setStatus("Shared Voice Input module is not loaded; cannot start visit-session voice task.", true);
       return;
     }
+    if (runtime.voiceStartInFlight) return;
+    runtime.voiceStartInFlight = true;
     runtime.voiceMode = "session";
+    state.diarizationStatus = "starting";
+    state.diarizationProvider = "diart_local";
+    state.diarizationWebSocketStatus = "connecting";
     initializeSemanticRoleMapping();
     updateVoiceButtons();
-    setStatus("Starting visit-session voice task.");
-    const voice = await window.HisVoiceInputController.start({
-      mode: "visit_session",
-      enableDiarization: true,
-      asrUrl: state.asrUrl || DEFAULT_STATE.asrUrl,
-      diarizationUrl: state.diarizationUrl || DEFAULT_STATE.diarizationUrl,
-      llmStatus: state.llmStatus,
-      onTranscript: function (text, data) {
-        runtime.lastAsrEvent = Object.assign({}, data || {}, {
-          finalText: data && data.type === "final" ? text : "",
-          timestamp: new Date().toISOString()
-        });
-        renderVoiceDebug();
-      },
-      onTurns: function (turns, data) {
-        runtime.lastAsrEvent = Object.assign({}, data || runtime.lastAsrEvent || {}, {
-          timestamp: new Date().toISOString()
-        });
-        const beforeFinalCount = finalVoiceTurnsRaw().length;
-        state.speakerTurns = mergeIncomingSpeakerTurns(state.speakerTurns, turns);
-        renderTurns();
-        setVoiceActionAvailability();
-        saveState();
-        if (finalVoiceTurnsRaw().length > beforeFinalCount) {
-          if (!maybeTriggerFirstRoundSemanticRoleMapping("first_doctor_patient_turns")) {
-            maybeTriggerSemanticRoleMapping("final_turn_added");
+    renderServiceStatus();
+    setStatus("Diart is starting. A cold start can take tens of seconds; wait before speaking.");
+    try {
+      const voice = await window.HisVoiceInputController.start({
+        mode: "visit_session",
+        enableDiarization: true,
+        asrUrl: state.asrUrl || DEFAULT_STATE.asrUrl,
+        diarizationUrl: state.diarizationUrl || DEFAULT_STATE.diarizationUrl,
+        llmStatus: state.llmStatus,
+        onTranscript: function (text, data) {
+          runtime.lastAsrEvent = Object.assign({}, data || {}, {
+            finalText: data && data.type === "final" ? text : "",
+            timestamp: new Date().toISOString()
+          });
+          renderVoiceDebug();
+        },
+        onTurns: function (turns, data) {
+          runtime.lastAsrEvent = Object.assign({}, data || runtime.lastAsrEvent || {}, {
+            timestamp: new Date().toISOString()
+          });
+          const beforeFinalCount = finalVoiceTurnsRaw().length;
+          state.speakerTurns = mergeIncomingSpeakerTurns(state.speakerTurns, turns);
+          renderTurns();
+          setVoiceActionAvailability();
+          saveState();
+          if (finalVoiceTurnsRaw().length > beforeFinalCount) {
+            if (!maybeTriggerFirstRoundSemanticRoleMapping("first_doctor_patient_turns")) {
+              maybeTriggerSemanticRoleMapping("final_turn_added");
+            }
           }
         }
+      });
+      runtime.recording = Boolean(voice.recording);
+      if (runtime.recording) {
+        state.voiceSessionEnded = false;
+        transitionConversation("voice_recording", "start_visit_recording");
+      } else {
+        runtime.voiceMode = "";
+        stopSemanticRoleMappingTriggers();
+        transitionConversation("voice_idle", "visit_recording_not_started");
       }
-    });
-    runtime.recording = Boolean(voice.recording);
-    if (runtime.recording) {
-      state.voiceSessionEnded = false;
-      transitionConversation("voice_recording", "start_visit_recording");
-    } else {
-      runtime.voiceMode = "";
-      stopSemanticRoleMappingTriggers();
-      transitionConversation("voice_idle", "visit_recording_not_started");
+      syncVoiceState(voice);
+      setStatus(voice.message || "Visit-session voice status updated.", voice.asrStatus === "disconnected" || isMicrophoneProblem(voice.microphoneStatus));
+    } finally {
+      runtime.voiceStartInFlight = false;
+      updateVoiceButtons();
+      renderServiceStatus();
     }
-    syncVoiceState(voice);
-    updateVoiceButtons();
-    renderServiceStatus();
-    setStatus(voice.message || "Visit-session voice status updated.", voice.asrStatus === "disconnected" || isMicrophoneProblem(voice.microphoneStatus));
   }
 
   async function stopActiveVoice(reason) {
@@ -4825,7 +4898,12 @@
       elements.visitSessionButton.title = dictating ? "Stop main-input voice first" : "Open Visit Session page; microphone will not start automatically";
     }
     if (elements.startVoiceButton) {
-      elements.startVoiceButton.disabled = runtime.recording;
+      elements.startVoiceButton.disabled = runtime.recording || runtime.voiceStartInFlight;
+      elements.startVoiceButton.classList.toggle("is-loading", runtime.voiceStartInFlight);
+      elements.startVoiceButton.setAttribute("aria-busy", runtime.voiceStartInFlight ? "true" : "false");
+      elements.startVoiceButton.innerHTML = runtime.voiceStartInFlight
+        ? '<span class="his-agent-spinner" aria-hidden="true"></span><span>Starting Diart...</span>'
+        : "Start Voice Task";
     }
     if (elements.stopVoiceButton) {
       elements.stopVoiceButton.disabled = !sessionRecording;
@@ -5380,7 +5458,6 @@
   function probeServices() {
     probeHttp((state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "") + "/api/health", "backendStatus");
     probeHttp((state.asrUrl || DEFAULT_STATE.asrUrl).replace(/\/+$/, "") + "/health", "asrStatus");
-    probeDiarization();
     markLlmStatusDeferred();
   }
 
@@ -5411,7 +5488,9 @@
   async function probeDiarization() {
     const base = (state.diarizationUrl || DEFAULT_STATE.diarizationUrl || state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "");
     const url = base + "/diarization/health";
-    runtime.serviceDetails.diarization = { url: url, status: "checking", error: "" };
+    state.diarizationStatus = "starting";
+    state.diarizationProvider = "diart_local";
+    runtime.serviceDetails.diarization = { url: url, status: "starting", error: "Cold start in progress." };
     renderCompactServiceStatus();
     try {
       const response = await fetchWithTimeout(url, { method: "GET" }, 45000);
@@ -5423,6 +5502,14 @@
         status: state.diarizationStatus,
         error: data.message || ""
       };
+      renderCompactServiceStatus();
+      saveState();
+      return {
+        connected: state.diarizationStatus === "connected",
+        status: state.diarizationStatus,
+        provider: state.diarizationProvider,
+        message: data.message || ""
+      };
     } catch (error) {
       state.diarizationProvider = "manual";
       state.diarizationStatus = error && error.name === "AbortError" ? "timeout" : "disconnected";
@@ -5431,9 +5518,15 @@
         status: state.diarizationStatus,
         error: error && error.message ? error.message : "Failed to fetch"
       };
+      renderCompactServiceStatus();
+      saveState();
+      return {
+        connected: false,
+        status: state.diarizationStatus,
+        provider: state.diarizationProvider,
+        message: runtime.serviceDetails.diarization.error
+      };
     }
-    renderCompactServiceStatus();
-    saveState();
   }
 
   async function probeHttp(url, stateKey) {

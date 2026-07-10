@@ -112,7 +112,7 @@ async function simulateConnectedLlm(page) {
   });
 }
 
-async function installFakeVoiceRuntime(page) {
+async function installFakeVoiceRuntime(page, options: { diarizationDelayMs?: number; onDiarizationHealth?: () => void } = {}) {
   await page.addInitScript(() => {
     class FakeWebSocket {
       static CONNECTING = 0;
@@ -179,6 +179,8 @@ async function installFakeVoiceRuntime(page) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, service: "asr" }) });
   });
   await page.route(/\/diarization\/health$/, async (route) => {
+    if (options.onDiarizationHealth) options.onDiarizationHealth();
+    if (options.diarizationDelayMs) await new Promise((resolve) => setTimeout(resolve, options.diarizationDelayMs));
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, provider: "diart_local", active_provider: "diart_local", status: "available" }) });
   });
 }
@@ -442,42 +444,80 @@ test.describe("Backend CORS and LLM connectivity", () => {
     await expect.poll(() => llmProbeCount, { timeout: 10_000 }).toBeGreaterThan(0);
   });
 
-  test("diarization health is explicit and does not fake diart availability", async ({ page }) => {
-    await page.goto("/html/login.html?v=e2e-diarization-health&" + localServiceQuery);
-    const result = await page.evaluate(async () => {
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 20_000);
-      try {
-        const response = await fetch("http://127.0.0.1:8000/diarization/health", { signal: controller.signal });
-        return { ok: response.ok, status: response.status, data: await response.json() };
-      } catch (error) {
-        return {
-          ok: true,
-          status: 0,
-          data: {
-            ok: false,
-            provider: "diart_local",
-            active_provider: "manual",
-            status: "unavailable_timeout",
-            error: error && error.name ? error.name : "fetch_error"
-          }
-        };
-      } finally {
-        window.clearTimeout(timer);
-      }
+  test("page load and Refresh Status do not activate Diart; the explicit button does", async ({ page }) => {
+    let diarizationHealthCalls = 0;
+    let releaseDiarization = () => {};
+    const diarizationGate = new Promise<void>((resolve) => { releaseDiarization = resolve; });
+    await page.route(/\/api\/health$/, async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
     });
-    expect(result.ok).toBe(true);
-    expect(result.data.provider).toBeTruthy();
-    expect(result.data.status).toBeTruthy();
-    if (result.data.status === "available") {
-      expect(result.data.provider).toBe("diart_local");
-      expect(result.data.active_provider).toBe("diart_local");
-      expect(result.data.ok).toBe(true);
-    } else {
-      expect(result.data.ok).toBe(false);
-      expect(result.data.active_provider).toBe("manual");
-      expect(result.data.status).toMatch(/unavailable_|error|disconnected/);
+    await page.route(/:8010\/health$/, async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+    await page.route(/\/api\/llm\/test$/, async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, content: "ok" }) });
+    });
+    await page.route(/\/diarization\/health$/, async (route) => {
+      diarizationHealthCalls += 1;
+      await diarizationGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, provider: "diart_local", active_provider: "diart_local", status: "available" })
+      });
+    });
+
+    for (const target of pages) {
+      const separator = target.path.includes("?") ? "&" : "?";
+      await page.goto(target.path + separator + localServiceQuery);
+      await page.waitForTimeout(200);
+      expect(diarizationHealthCalls, target.name).toBe(0);
     }
+    await page.goto("/html/login.html?v=e2e-diarization-explicit&" + localServiceQuery);
+
+    await openAgent(page);
+    await page.locator(".his-agent-topic-card:not(.his-agent-topic-card-clone)[data-agent-topic='connection']").first().click();
+    await expect(page.locator("#hisAgentStatusView")).toBeVisible();
+    await expect(page.locator("#hisAgentRefreshStatusButton")).toBeEnabled();
+    expect(diarizationHealthCalls).toBe(0);
+
+    await page.locator("#hisAgentRefreshStatusButton").click();
+    await expect(page.locator("#hisAgentRefreshStatusButton")).toBeEnabled();
+    expect(diarizationHealthCalls).toBe(0);
+
+    await page.locator("#hisAgentActivateDiarizationButton").click();
+    await expect.poll(() => diarizationHealthCalls).toBe(1);
+    await expect(page.locator("#hisAgentActivateDiarizationButton")).toContainText("Starting Diart");
+    await expect(page.locator("#hisAgentStatusView")).toContainText("Starting (cold start)");
+    releaseDiarization();
+    await expect(page.locator("#hisAgentStatusView")).toContainText("Connected");
+    await expect(page.locator("#hisAgentActivateDiarizationButton")).toContainText("Restart Diart");
+  });
+
+  test("Start Voice Task shows the Diart cold start and waits for the live socket", async ({ page }) => {
+    let diarizationHealthCalls = 0;
+    await installFakeVoiceRuntime(page, {
+      diarizationDelayMs: 700,
+      onDiarizationHealth: () => { diarizationHealthCalls += 1; }
+    });
+    await page.goto("/html/login.html?v=e2e-visit-session-diart&" + localServiceQuery);
+    await page.waitForTimeout(300);
+    expect(diarizationHealthCalls).toBe(0);
+
+    await openAgent(page);
+    await openVoicePanel(page);
+    expect(diarizationHealthCalls).toBe(0);
+    await expect(page.locator("#hisAgentVoiceStatusCard")).toContainText("Not activated");
+
+    await page.locator("#hisAgentStartVoiceButton").click();
+    await expect.poll(() => diarizationHealthCalls).toBe(1);
+    await expect(page.locator("#hisAgentStartVoiceButton")).toContainText("Starting Diart");
+    await expect(page.locator("#hisAgentVoiceStatusCard")).toContainText("Diart is starting");
+
+    await expect(page.locator("#hisAgentVoiceStatusCard")).toContainText("You can begin the doctor-patient conversation now.");
+    await expect(page.locator("#hisAgentVoiceStatusCard")).toContainText("Connected");
+    await expect(page.locator("#hisAgentStartVoiceButton")).toHaveText("Start Voice Task");
+    await expect(page.locator("#hisAgentStopVoiceButton")).toBeEnabled();
   });
 });
 
@@ -1561,6 +1601,8 @@ test.describe("Floating Agent task display", () => {
 
     const result = await page.evaluate(async () => {
       const voice = await window.HisVoiceInputController.start({
+        mode: "visit_session",
+        enableDiarization: true,
         asrUrl: "http://127.0.0.1:8010",
         diarizationUrl: "http://127.0.0.1:8000",
         llmStatus: "disconnected"
