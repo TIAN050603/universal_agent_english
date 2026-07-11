@@ -14,10 +14,12 @@
   const LLM_STATUS_TIMEOUT_MS = 5000;
   const TASK_SUMMARY_TICK_MS = 100;
   const TASK_PANEL_AUTO_COMPACT_MS = 2000;
-  const SEMANTIC_ROLE_COOLDOWN_MS = 10000;
-  const SEMANTIC_ROLE_MIN_NEW_FINAL_TURNS = 2;
-  const SEMANTIC_ROLE_MIN_TURNS_PER_SPEAKER = 2;
-  const SEMANTIC_ROLE_MIN_TEXT_PER_SPEAKER = 10;
+  const SEMANTIC_ROLE_COOLDOWN_MS = 0;
+  const SEMANTIC_ROLE_MIN_NEW_FINAL_TURNS = 1;
+  const SEMANTIC_ROLE_MIN_TURNS_PER_SPEAKER = 1;
+  const SEMANTIC_ROLE_MIN_TEXT_PER_SPEAKER = 1;
+  const SEMANTIC_ROLE_REQUEST_TIMEOUT_MS = 30000;
+  const SEMANTIC_ROLE_FINAL_REQUEST_TIMEOUT_MS = 90000;
   const SAFE_PAGES = {
     login: "login.html",
     dashboard: "dashboard.html",
@@ -145,13 +147,19 @@
       inFlight: false,
       lastMappedAt: 0,
       lastMappedFinalTurnCount: 0,
+      lastMappedSignature: "",
+      activeSignature: "",
       stopped: true,
       frozen: false,
       lastReason: "",
       lastError: "",
       lastResult: null,
       firstRoundTriggered: false,
-      manualEditing: false
+      manualEditing: false,
+      pending: false,
+      pendingReason: "",
+      generation: 0,
+      activePromise: null
     },
     planningTask: null,
     activeRunId: "",
@@ -3726,9 +3734,18 @@
     if (runtime.recording) {
       await stopActiveVoice("draft_voice_task");
     }
-    await runFinalSemanticRoleMapping("end_voice_conversation");
+    setStatus("Finalizing Doctor/Patient roles from the complete conversation...");
+    const finalRoleResult = await runFinalSemanticRoleMapping("end_voice_conversation");
     freezeVoiceTurnsForReview();
     state.voiceSessionEnded = Boolean(state.speakerTurns.length);
+    if (!finalRoleResult || !finalRoleResult.ok) {
+      renderTurns();
+      renderVoiceSessionStatus();
+      setVoiceActionAvailability();
+      saveState();
+      setStatus("Final Doctor/Patient mapping could not be validated. Review the roles and try organizing the task again.", true);
+      return;
+    }
     const finalTurns = finalSpeakerTurns();
     if (!finalTurns.length) {
       setStatus("No final Doctor/Patient turns are available, so a task cannot be organized.", true);
@@ -4140,10 +4157,16 @@
     runtime.semanticRoleMapping.inFlight = false;
     runtime.semanticRoleMapping.lastMappedAt = 0;
     runtime.semanticRoleMapping.lastMappedFinalTurnCount = 0;
+    runtime.semanticRoleMapping.lastMappedSignature = "";
+    runtime.semanticRoleMapping.activeSignature = "";
     runtime.semanticRoleMapping.stopped = true;
     runtime.semanticRoleMapping.frozen = false;
     runtime.semanticRoleMapping.lastResult = null;
     runtime.semanticRoleMapping.firstRoundTriggered = false;
+    runtime.semanticRoleMapping.pending = false;
+    runtime.semanticRoleMapping.pendingReason = "";
+    runtime.semanticRoleMapping.generation += 1;
+    runtime.semanticRoleMapping.activePromise = null;
     runtime.lastAsrEvent = null;
     elements.voiceDraft.innerHTML = "";
     renderTurns();
@@ -4192,11 +4215,12 @@
   }
 
   function finalVoiceTurnsRaw() {
-    return state.speakerTurns.filter(isFinalTextTurn).slice(-40);
+    return state.speakerTurns.filter(isFinalTextTurn).slice(-120);
   }
 
   function initializeSemanticRoleMapping() {
     const currentMapping = currentSpeakerRoleMapping();
+    runtime.semanticRoleMapping.generation += 1;
     state.voiceTurnsFrozen = false;
     state.voiceSemanticMapping = {
       mapping: currentMapping,
@@ -4209,12 +4233,17 @@
     runtime.semanticRoleMapping.inFlight = false;
     runtime.semanticRoleMapping.lastMappedAt = 0;
     runtime.semanticRoleMapping.lastMappedFinalTurnCount = 0;
+    runtime.semanticRoleMapping.lastMappedSignature = "";
+    runtime.semanticRoleMapping.activeSignature = "";
     runtime.semanticRoleMapping.stopped = false;
     runtime.semanticRoleMapping.frozen = false;
     runtime.semanticRoleMapping.lastReason = "";
     runtime.semanticRoleMapping.lastError = "";
     runtime.semanticRoleMapping.lastResult = null;
     runtime.semanticRoleMapping.firstRoundTriggered = false;
+    runtime.semanticRoleMapping.pending = false;
+    runtime.semanticRoleMapping.pendingReason = "";
+    runtime.semanticRoleMapping.activePromise = null;
   }
 
   function stopSemanticRoleMappingTriggers() {
@@ -4235,7 +4264,11 @@
       frozen: Boolean(state.voiceTurnsFrozen || runtime.semanticRoleMapping.frozen),
       lastMappedAt: runtime.semanticRoleMapping.lastMappedAt || 0,
       lastMappedFinalTurnCount: runtime.semanticRoleMapping.lastMappedFinalTurnCount || 0,
+      lastMappedSignature: runtime.semanticRoleMapping.lastMappedSignature || "",
+      activeSignature: runtime.semanticRoleMapping.activeSignature || "",
       firstRoundTriggered: Boolean(runtime.semanticRoleMapping.firstRoundTriggered),
+      pending: Boolean(runtime.semanticRoleMapping.pending),
+      generation: Number(runtime.semanticRoleMapping.generation || 0),
       lastReason: runtime.semanticRoleMapping.lastReason || "",
       lastError: runtime.semanticRoleMapping.lastError || "",
       mapping: currentSpeakerRoleMapping(),
@@ -4246,16 +4279,17 @@
   }
 
   function currentSpeakerRoleMapping() {
-    const mapping = Object.assign({
-      speaker_0: "doctor",
-      speaker_1: "patient"
-    }, state.voiceSemanticMapping && state.voiceSemanticMapping.mapping || {});
+    const persisted = state.voiceSemanticMapping && state.voiceSemanticMapping.source === "llm_semantic_mapping"
+      ? state.voiceSemanticMapping.mapping || {}
+      : {};
+    const mapping = Object.assign({}, persisted);
     state.speakerTurns.forEach(function (turn) {
       const speakerId = normalizeSpeakerId(turn && (turn.speaker || turn.speaker_id || turn.raw_speaker || turn.raw_speaker_id));
       if (!speakerId || mapping[speakerId]) {
         return;
       }
-      if (turn.role === "doctor" || turn.role === "patient") {
+      const trustedRole = isManualRoleSource(turn.role_source) || turn.role_source === "llm_semantic_mapping";
+      if (trustedRole && (turn.role === "doctor" || turn.role === "patient")) {
         mapping[speakerId] = turn.role;
       }
     });
@@ -4267,12 +4301,20 @@
     return mapping;
   }
 
-  function compactSemanticRoleTurns(turns) {
-    return (Array.isArray(turns) ? turns : []).filter(isFinalTextTurn).slice(-40).map(function (turn) {
+  function compactSemanticRoleTurns(turns, limit) {
+    const maxTurns = Math.max(1, Math.min(120, Number(limit || 40)));
+    return (Array.isArray(turns) ? turns : []).filter(isFinalTextTurn).slice(-maxTurns).map(function (turn, index) {
+      const speakerId = normalizeSpeakerId(turn.speaker || turn.speaker_id || turn.raw_speaker || turn.raw_speaker_id) || "";
+      const trustedRole = isManualRoleSource(turn.role_source)
+        || turn.role_source === "llm_semantic_mapping"
+        || turn.role_source === "example_visit";
+      const semanticRole = trustedRole ? normalizeRole(turn.role) : "unknown";
       return {
-        speaker: normalizeSpeakerId(turn.speaker || turn.speaker_id || turn.raw_speaker || turn.raw_speaker_id) || "",
-        role: normalizeRole(turn.role),
-        role_label: roleLabel(turn.role),
+        turn_id: String(turn.turn_id || turn.turnId || "semantic_turn_" + (index + 1)),
+        speaker: speakerId,
+        speaker_id: speakerId,
+        role: semanticRole,
+        role_label: semanticRole === "unknown" ? "Unknown" : roleLabel(semanticRole),
         role_source: turn.role_source || "",
         text: compactText(turn.text || "", 320),
         is_final: true
@@ -4280,6 +4322,12 @@
     }).filter(function (turn) {
       return turn.speaker && turn.text;
     });
+  }
+
+  function semanticRoleSignature(turns) {
+    return compactSemanticRoleTurns(turns).map(function (turn) {
+      return turn.speaker_id + "|" + turn.text;
+    }).join("\n");
   }
 
   function semanticRoleStats(turns) {
@@ -4306,17 +4354,12 @@
 
   function hasFirstRoundSemanticRoleSample(turns) {
     const speakers = {};
-    const roles = {};
     compactSemanticRoleTurns(turns).forEach(function (turn) {
       if (turn.speaker) {
         speakers[turn.speaker] = true;
       }
-      const role = normalizeRole(turn.role);
-      if (role === "doctor" || role === "patient") {
-        roles[role] = true;
-      }
     });
-    return Object.keys(speakers).length >= 2 && roles.doctor && roles.patient;
+    return Object.keys(speakers).length >= 2;
   }
 
   function hasActivePageMutationStep() {
@@ -4334,7 +4377,11 @@
     const settings = options || {};
     const finalTurns = turns || finalVoiceTurnsRaw();
     const firstRound = Boolean(settings.firstRound);
-    if (firstRound ? !hasFirstRoundSemanticRoleSample(finalTurns) : !hasSemanticRoleSample(finalTurns)) {
+    if (settings.force && settings.final) {
+      if (!finalTurns.length) {
+        return false;
+      }
+    } else if (firstRound ? !hasFirstRoundSemanticRoleSample(finalTurns) : !hasSemanticRoleSample(finalTurns)) {
       return false;
     }
     if (runtime.semanticRoleMapping.inFlight) {
@@ -4362,7 +4409,8 @@
     if (runtime.semanticRoleMapping.lastMappedAt && now - runtime.semanticRoleMapping.lastMappedAt < SEMANTIC_ROLE_COOLDOWN_MS) {
       return false;
     }
-    if (finalTurns.length - Number(runtime.semanticRoleMapping.lastMappedFinalTurnCount || 0) < SEMANTIC_ROLE_MIN_NEW_FINAL_TURNS) {
+    const signature = semanticRoleSignature(finalTurns);
+    if (!signature || signature === runtime.semanticRoleMapping.lastMappedSignature) {
       return false;
     }
     return true;
@@ -4388,6 +4436,23 @@
 
   function maybeTriggerSemanticRoleMapping(reason) {
     const finalTurns = finalVoiceTurnsRaw();
+    if (runtime.semanticRoleMapping.inFlight) {
+      const signature = semanticRoleSignature(finalTurns);
+      const canQueue = !runtime.semanticRoleMapping.stopped
+        && !state.voiceTurnsFrozen
+        && !runtime.semanticRoleMapping.frozen
+        && !runtime.semanticRoleMapping.manualEditing
+        && !hasActivePageMutationStep()
+        && hasSemanticRoleSample(finalTurns)
+        && Boolean(signature)
+        && signature !== runtime.semanticRoleMapping.activeSignature
+        && signature !== runtime.semanticRoleMapping.lastMappedSignature;
+      if (canQueue) {
+        runtime.semanticRoleMapping.pending = true;
+        runtime.semanticRoleMapping.pendingReason = reason || "final_turn_added";
+      }
+      return canQueue;
+    }
     if (!shouldTriggerSemanticRoleMapping(finalTurns)) {
       return false;
     }
@@ -4408,6 +4473,25 @@
   async function runSemanticRoleMapping(reason, options) {
     const settings = options || {};
     const finalTurns = finalVoiceTurnsRaw();
+    if (runtime.semanticRoleMapping.inFlight) {
+      if (settings.force && runtime.semanticRoleMapping.activePromise) {
+        await runtime.semanticRoleMapping.activePromise.catch(function () {
+          return null;
+        });
+        await new Promise(function (resolve) {
+          window.setTimeout(resolve, 0);
+        });
+        return runSemanticRoleMapping(reason, settings);
+      }
+      maybeTriggerSemanticRoleMapping(reason || "final_turn_added");
+      return {
+        ok: false,
+        skipped: true,
+        queued: Boolean(runtime.semanticRoleMapping.pending),
+        reason: "semantic_mapping_in_flight",
+        mapping: currentSpeakerRoleMapping()
+      };
+    }
     if (!shouldTriggerSemanticRoleMapping(finalTurns, settings)) {
       return {
         ok: false,
@@ -4416,19 +4500,41 @@
         mapping: currentSpeakerRoleMapping()
       };
     }
+    const generation = Number(runtime.semanticRoleMapping.generation || 0);
+    const requestSignature = semanticRoleSignature(finalTurns);
     runtime.semanticRoleMapping.inFlight = true;
+    runtime.semanticRoleMapping.activeSignature = requestSignature;
     runtime.semanticRoleMapping.lastReason = reason || "";
     runtime.semanticRoleMapping.lastError = "";
+    const requestPromise = requestSemanticRoleMapping(finalTurns, reason || "semantic_role_mapping", settings);
+    runtime.semanticRoleMapping.activePromise = requestPromise;
     try {
-      const result = await requestSemanticRoleMapping(finalTurns, reason || "semantic_role_mapping", settings);
+      const result = await requestPromise;
+      if (generation !== Number(runtime.semanticRoleMapping.generation || 0)) {
+        return {
+          ok: false,
+          skipped: true,
+          reason: "stale_voice_session",
+          mapping: currentSpeakerRoleMapping()
+        };
+      }
       runtime.semanticRoleMapping.lastMappedAt = Date.now();
       runtime.semanticRoleMapping.lastMappedFinalTurnCount = finalTurns.length;
+      runtime.semanticRoleMapping.lastMappedSignature = requestSignature;
       runtime.semanticRoleMapping.lastResult = result || null;
       if (result && result.ok && result.mapping) {
         applySemanticRoleMapping(result, reason || "semantic_role_mapping");
       }
       return result;
     } catch (error) {
+      if (generation !== Number(runtime.semanticRoleMapping.generation || 0)) {
+        return {
+          ok: false,
+          skipped: true,
+          reason: "stale_voice_session",
+          mapping: currentSpeakerRoleMapping()
+        };
+      }
       runtime.semanticRoleMapping.lastError = error && error.message ? error.message : String(error || "semantic role mapping failed");
       return {
         ok: false,
@@ -4436,12 +4542,31 @@
         mapping: currentSpeakerRoleMapping()
       };
     } finally {
-      runtime.semanticRoleMapping.inFlight = false;
+      if (generation === Number(runtime.semanticRoleMapping.generation || 0)
+          && runtime.semanticRoleMapping.activePromise === requestPromise) {
+        runtime.semanticRoleMapping.inFlight = false;
+        runtime.semanticRoleMapping.activePromise = null;
+        runtime.semanticRoleMapping.activeSignature = "";
+        const pendingReason = runtime.semanticRoleMapping.pendingReason || "queued_final_turn";
+        const shouldRunPending = runtime.semanticRoleMapping.pending
+          && !runtime.semanticRoleMapping.stopped
+          && !state.voiceTurnsFrozen
+          && !runtime.semanticRoleMapping.frozen
+          && semanticRoleSignature(finalVoiceTurnsRaw()) !== runtime.semanticRoleMapping.lastMappedSignature;
+        runtime.semanticRoleMapping.pending = false;
+        runtime.semanticRoleMapping.pendingReason = "";
+        if (shouldRunPending) {
+          window.setTimeout(function () {
+            maybeTriggerSemanticRoleMapping(pendingReason);
+          }, 0);
+        }
+      }
     }
   }
 
   async function requestSemanticRoleMapping(turns, reason, options) {
     const patientContext = currentPatientContext();
+    const finalRequest = Boolean(options && options.final);
     const endpoint = (state.backendUrl || DEFAULT_STATE.backendUrl).replace(/\/+$/, "") + "/api/voice/semantic-role-map";
     const response = await fetchWithTimeout(endpoint, {
       method: "POST",
@@ -4450,23 +4575,30 @@
         patient_context: patientContext,
         current_page_type: getPageType(),
         current_patient_id: patientContext.patientId || "",
-        current_mapping: currentSpeakerRoleMapping(),
-        turns: compactSemanticRoleTurns(turns),
+        current_mapping: finalRequest ? {} : currentSpeakerRoleMapping(),
+        turns: compactSemanticRoleTurns(turns, finalRequest ? 120 : 40),
         reason: reason || "",
-        final: Boolean(options && options.final)
+        final: finalRequest
       })
-    }, 6000);
+    }, finalRequest ? SEMANTIC_ROLE_FINAL_REQUEST_TIMEOUT_MS : SEMANTIC_ROLE_REQUEST_TIMEOUT_MS);
     return response.json();
   }
 
   function applySemanticRoleMapping(result, reason) {
     const mapping = result && result.mapping && typeof result.mapping === "object" ? result.mapping : {};
+    const turnRoles = result && result.turn_roles && typeof result.turn_roles === "object"
+      ? result.turn_roles
+      : (result && result.turnRoles && typeof result.turnRoles === "object" ? result.turnRoles : {});
     const suggestions = Array.isArray(result && result.suggestions) ? result.suggestions.slice(0, 8) : [];
     const conflicts = [];
     let changed = false;
     state.speakerTurns = state.speakerTurns.map(function (turn) {
       const speakerId = normalizeSpeakerId(turn && (turn.speaker || turn.speaker_id || turn.raw_speaker || turn.raw_speaker_id));
-      const nextRole = speakerId ? mapping[speakerId] : "";
+      const turnId = String(turn && (turn.turn_id || turn.turnId) || "");
+      const perTurnRole = turnId ? turnRoles[turnId] : "";
+      const hasPerTurnRole = perTurnRole === "doctor" || perTurnRole === "patient";
+      const nextRole = hasPerTurnRole ? perTurnRole : (speakerId ? mapping[speakerId] : "");
+      const nextRoleSource = hasPerTurnRole ? "llm_turn_semantic_mapping" : "llm_semantic_mapping";
       if (nextRole !== "doctor" && nextRole !== "patient") {
         return turn;
       }
@@ -4481,14 +4613,14 @@
         }
         return turn;
       }
-      if (turn.role === nextRole && turn.role_source === "llm_semantic_mapping") {
+      if (turn.role === nextRole && turn.role_source === nextRoleSource) {
         return turn;
       }
       changed = true;
       return Object.assign({}, turn, {
         role: nextRole,
         role_label: roleLabel(nextRole),
-        role_source: "llm_semantic_mapping",
+        role_source: nextRoleSource,
         semantic_role_confidence: result.confidence === undefined ? null : result.confidence,
         semantic_role_reason: reason || ""
       });

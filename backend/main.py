@@ -860,7 +860,12 @@ def call_llm_for_plan(command: str) -> tuple[dict[str, Any] | None, str, str | N
 
 
 @timed("call_llm_json")
-def call_llm_json(messages: list[dict[str, str]], purpose: str, max_tokens: int = 900) -> tuple[dict[str, Any] | None, str, str | None, dict[str, Any]]:
+def call_llm_json(
+    messages: list[dict[str, str]],
+    purpose: str,
+    max_tokens: int = 900,
+    strict_json: bool = False,
+) -> tuple[dict[str, Any] | None, str, str | None, dict[str, Any]]:
     llm_info = {
         "llmUsed": False,
         "provider": get_llm_provider(),
@@ -874,13 +879,16 @@ def call_llm_json(messages: list[dict[str, str]], purpose: str, max_tokens: int 
 
     url = get_llm_base_url().rstrip("/") + "/chat/completions"
     try:
+        request_payload = build_chat_completion_payload(messages, max_tokens)
+        if strict_json:
+            request_payload["response_format"] = {"type": "json_object"}
         response = requests.post(
             url,
             headers={
                 "Authorization": "Bearer " + api_key,
                 "Content-Type": "application/json; charset=utf-8",
             },
-            json=build_chat_completion_payload(messages, max_tokens),
+            json=request_payload,
             timeout=get_llm_request_timeout(),
         )
         llm_info["llmUsed"] = True
@@ -1019,9 +1027,10 @@ def compact_voice_patient_context(payload: VoiceTurnsToAgentTaskRequest) -> dict
 
 
 @timed("compact_voice_semantic_turns")
-def compact_voice_semantic_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def compact_voice_semantic_turns(turns: list[dict[str, Any]], limit: int = 40) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
-    for item in (turns or [])[-40:]:
+    safe_limit = max(1, min(120, int(limit or 40)))
+    for index, item in enumerate((turns or [])[-safe_limit:], start=1):
         if not isinstance(item, dict):
             continue
         speaker_id = str(item.get("speaker_id") or item.get("speakerId") or "").strip()
@@ -1033,6 +1042,7 @@ def compact_voice_semantic_turns(turns: list[dict[str, Any]]) -> list[dict[str, 
         role = str(item.get("role") or "").strip().lower()
         role_source = str(item.get("role_source") or item.get("roleSource") or "").strip()
         compact.append({
+            "turn_id": str(item.get("turn_id") or item.get("turnId") or "turn_" + str(index))[:100],
             "speaker_id": speaker_id[:40],
             "role": role if role in {"doctor", "patient", "unknown"} else "unknown",
             "role_label": item.get("role_label") or item.get("roleLabel") or "",
@@ -1059,26 +1069,75 @@ def voice_semantic_speaker_stats(turns: list[dict[str, Any]]) -> dict[str, dict[
     return stats
 
 
+@timed("group_voice_semantic_turns")
+def group_voice_semantic_turns(turns: list[dict[str, Any]]) -> str:
+    grouped: dict[str, list[tuple[int, str]]] = {}
+    for index, item in enumerate(turns, start=1):
+        speaker_id = str(item.get("speaker_id") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not speaker_id or not text:
+            continue
+        grouped.setdefault(speaker_id, []).append((index, text))
+    lines: list[str] = []
+    for speaker_id in sorted(grouped):
+        lines.append(speaker_id + ":")
+        lines.extend("- [turn " + str(index) + "] " + text for index, text in grouped[speaker_id])
+    return "\n".join(lines) or "none"
+
+
 @timed("build_voice_semantic_role_prompt")
 def build_voice_semantic_role_prompt(payload: VoiceSemanticRoleMapRequest, turns: list[dict[str, Any]]) -> list[dict[str, str]]:
     context = compact_voice_patient_context(payload)
     patient_line = "unknown patient"
     if context.get("patientId") or context.get("patientName"):
         patient_line = (context.get("patientId") + " " + context.get("patientName")).strip()
+    speaker_ids = sorted(voice_semantic_speaker_stats(turns))
+    authoritative_final = bool(payload.final)
+    two_speaker_final = bool(payload.final and len(speaker_ids) == 2)
     current_mapping = payload.current_mapping if isinstance(payload.current_mapping, dict) else {}
-    mapping_lines = "\n".join(
-        str(key) + " -> " + str(value)
-        for key, value in sorted(current_mapping.items())
-        if re.match(r"^speaker_\d+$", str(key))
-    ) or "none"
-    dialogue = "\n".join(
-        str(item.get("speaker_id") or "")
-        + " (current="
-        + str(item.get("role_label") or item.get("role") or "unknown")
-        + "): "
-        + str(item.get("text") or "").strip()
-        for item in turns
+    mapping_lines = "ignored during the authoritative final pass" if authoritative_final else (
+        "\n".join(
+            str(key) + " -> " + str(value)
+            for key, value in sorted(current_mapping.items())
+            if re.match(r"^speaker_\d+$", str(key))
+        ) or "none"
     )
+    dialogue = "\n".join(
+        "[turn "
+        + str(item.get("turn_id") or index)
+        + "] "
+        + str(item.get("speaker_id") or "")
+        + ("" if authoritative_final else " (current=" + str(item.get("role_label") or item.get("role") or "unknown") + ")")
+        + ": "
+        + str(item.get("text") or "").strip()
+        for index, item in enumerate(turns, start=1)
+    )
+    grouped_dialogue = group_voice_semantic_turns(turns)
+    if two_speaker_final:
+        role_contract = (
+            "This is the authoritative final role-mapping pass after the conversation has ended. "
+            "Ignore every previous role label and current mapping. Speaker numbers are arbitrary and may be reversed in every session. "
+            "Exactly two speaker IDs are present: " + ", ".join(speaker_ids) + ". "
+            "Return both IDs and assign exactly one to doctor and exactly one to patient. "
+            "Neither unknown nor duplicate roles are allowed. Decide from all utterances by each speaker and the chronological dialogue. "
+            "Also classify every turn_id independently in turn_roles. A turn role may override its speaker's global mapping when diarization mixed two people into one cluster. "
+            "The patient typically self-identifies, reports symptoms or history, and answers questions. "
+            "The doctor typically asks or confirms clinical questions and states an intention to record or update the chart."
+        )
+    elif authoritative_final:
+        role_contract = (
+            "This is the authoritative final role-mapping pass after the conversation has ended. "
+            "Ignore every previous role label and current mapping. Diarization may have collapsed both people into one speaker ID or mixed both roles within a speaker cluster. "
+            "Return a best-evidence global mapping for every actual speaker ID, but independently classify every turn_id in turn_roles. "
+            "The patient typically self-identifies, reports symptoms or history, and answers questions. "
+            "The doctor typically asks or confirms clinical questions and states an intention to record or update the chart. "
+            "When global speaker identity conflicts with a sentence's dialogue function, the per-turn semantic role must take precedence."
+        )
+    else:
+        role_contract = (
+            "This is an incremental provisional pass. Classify every supported speaker_id as doctor, patient, or unknown from the evidence currently available. "
+            "Speaker numbers are arbitrary and must never determine the role."
+        )
     user_prompt = (
         "Current patient / 当前患者:\n"
         + patient_line
@@ -1086,18 +1145,21 @@ def build_voice_semantic_role_prompt(payload: VoiceSemanticRoleMapRequest, turns
         + (context.get("pageType") or "unknown")
         + "\n\nCurrent speaker mapping / 当前 speaker 映射:\n"
         + mapping_lines
-        + "\n\nFinal turns / final turns:\n"
+        + "\n\nChronological final turns / 按时间排列的 final turns:\n"
         + dialogue
-        + "\n\nTexts may be English, Chinese, or mixed. Classify each speaker_id as doctor, patient, or unknown. "
-        "Doctors usually ask, confirm, prescribe, or say record/save. Patients usually describe symptoms, identity, history, or answer questions. "
-        "Return strict JSON only: "
-        '{"ok":true,"mapping":{"speaker_0":"doctor","speaker_1":"patient"},"confidence":0.0,"reason_summary":"brief reason","suggestions":[]}'
-        ". mapping may contain only speaker_ids you can classify. Values must be doctor/patient/unknown. "
+        + "\n\nAll utterances grouped by speaker / 按 speaker 汇总的全部话语:\n"
+        + grouped_dialogue
+        + "\n\n"
+        + role_contract
+        + " Texts may be English, Chinese, or mixed. Return strict JSON only with this schema: "
+        '{"ok":true,"mapping":{"<actual_speaker_id>":"doctor_or_patient"},"turn_roles":{"<actual_turn_id>":"doctor_or_patient"},"confidence":0.0,"reason_summary":"brief evidence-based reason","suggestions":[]}'
+        ". Use only actual speaker IDs from the transcript. Do not copy a fixed speaker-number mapping. "
+        "For the final pass, turn_roles must contain every actual turn_id exactly once and must classify the sentence from its own dialogue function. "
         "Do not return page actions, do not save, do not modify patient-store, and do not write audit log."
     )
     system_prompt = (
         "You are a bilingual semantic role mapper for HIS visit transcripts. "
-        "Your only job is mapping speaker_id to doctor/patient/unknown from the final turns and patient context. "
+        "Your only job is mapping speaker IDs and individual dialogue turns to clinical roles from dialogue behavior and patient context. "
         "Do not plan page actions, do not organize an Agent task, and do not execute business changes."
     )
     return [
@@ -1112,6 +1174,7 @@ def normalize_voice_semantic_mapping(data: dict[str, Any] | None) -> dict[str, A
         return {
             "ok": False,
             "mapping": {},
+            "turn_roles": {},
             "confidence": 0,
             "reason_summary": "",
             "suggestions": [],
@@ -1126,6 +1189,14 @@ def normalize_voice_semantic_mapping(data: dict[str, Any] | None) -> dict[str, A
         if role not in {"doctor", "patient", "unknown"}:
             continue
         mapping[speaker_id] = role
+    raw_turn_roles = data.get("turn_roles") if isinstance(data.get("turn_roles"), dict) else {}
+    turn_roles: dict[str, str] = {}
+    for key, value in raw_turn_roles.items():
+        turn_id = str(key or "").strip()
+        role = str(value or "").strip().lower()
+        if not turn_id or role not in {"doctor", "patient"}:
+            continue
+        turn_roles[turn_id] = role
     suggestions = data.get("suggestions") if isinstance(data.get("suggestions"), list) else []
     try:
         confidence = float(data.get("confidence") or 0)
@@ -1134,10 +1205,29 @@ def normalize_voice_semantic_mapping(data: dict[str, Any] | None) -> dict[str, A
     return {
         "ok": bool(mapping),
         "mapping": mapping,
+        "turn_roles": turn_roles,
         "confidence": max(0, min(1, confidence)),
         "reason_summary": str(data.get("reason_summary") or "").strip()[:240],
         "suggestions": suggestions[:8],
     }
+
+
+@timed("align_voice_semantic_turn_roles")
+def align_voice_semantic_turn_roles(turn_roles: dict[str, str], expected_turn_ids: set[str]) -> dict[str, str]:
+    aligned: dict[str, str] = {}
+    for raw_key, role in turn_roles.items():
+        key = str(raw_key or "").strip()
+        candidates = [key]
+        unwrapped = key[1:-1].strip() if key.startswith("[") and key.endswith("]") else key
+        if unwrapped not in candidates:
+            candidates.append(unwrapped)
+        prefixed = re.match(r"^turn(?:\s+|\s*:\s*)(.+)$", unwrapped, flags=re.IGNORECASE)
+        if prefixed:
+            candidates.append(prefixed.group(1).strip())
+        matched = next((candidate for candidate in candidates if candidate in expected_turn_ids), "")
+        if matched:
+            aligned[matched] = role
+    return aligned
 
 
 @timed("build_voice_turns_to_agent_task_prompt")
@@ -2919,19 +3009,21 @@ async def next_universal_agent_action(payload: UniversalNextActionRequest):
 @app.post("/api/voice/semantic-role-map", response_model=None)
 @timed("endpoint:voice_semantic_role_map")
 async def voice_semantic_role_map(payload: VoiceSemanticRoleMapRequest):
-    turns = compact_voice_semantic_turns(payload.turns)
+    turns = compact_voice_semantic_turns(payload.turns, 120 if payload.final else 40)
     stats = voice_semantic_speaker_stats(turns)
-    if len(stats) < 2:
+    if not stats or (len(stats) < 2 and not payload.final):
         return utf8_json({
             "ok": False,
             "message": "样本不足，至少需要两个 speaker_id。",
             "mapping": {},
             "stats": stats,
         }, 200)
-    data, raw_response, error, llm_info = call_llm_json(
+    data, raw_response, error, llm_info = await asyncio.to_thread(
+        call_llm_json,
         build_voice_semantic_role_prompt(payload, turns),
-        "voice semantic role mapping",
-        max_tokens=120,
+        "final authoritative voice semantic role mapping" if payload.final else "voice semantic role mapping",
+        360 if payload.final else 160,
+        True,
     )
     if error:
         return utf8_json(
@@ -2949,14 +3041,38 @@ async def voice_semantic_role_map(payload: VoiceSemanticRoleMapRequest):
             200,
         )
     parsed = normalize_voice_semantic_mapping(data or {})
+    authoritative_final = bool(payload.final)
+    two_speaker_final = bool(payload.final and len(stats) == 2)
+    expected_turn_ids = {str(item.get("turn_id") or "") for item in turns if item.get("turn_id")}
+    parsed["turn_roles"] = align_voice_semantic_turn_roles(parsed["turn_roles"], expected_turn_ids)
+    returned_turn_ids = set(parsed["turn_roles"])
+    turn_roles_validated = bool(payload.final and expected_turn_ids and returned_turn_ids == expected_turn_ids)
+    if two_speaker_final:
+        speaker_ids = set(stats)
+        returned_ids = set(parsed["mapping"])
+        returned_roles = sorted(parsed["mapping"].values())
+        mapping_validated = returned_ids == speaker_ids and returned_roles == ["doctor", "patient"]
+        if not mapping_validated or not turn_roles_validated:
+            parsed["ok"] = False
+    elif payload.final:
+        mapping_validated = bool(parsed["mapping"])
+        if not turn_roles_validated:
+            parsed["ok"] = False
+    else:
+        mapping_validated = bool(parsed["ok"])
     return utf8_json(
         {
             "ok": parsed["ok"],
             "mapping": parsed["mapping"],
+            "turn_roles": parsed["turn_roles"],
             "confidence": parsed["confidence"],
             "reason_summary": parsed["reason_summary"],
             "suggestions": parsed["suggestions"],
             "stats": stats,
+            "authoritativeFinal": authoritative_final,
+            "twoSpeakerFinal": two_speaker_final,
+            "mappingValidated": mapping_validated,
+            "turnRolesValidated": turn_roles_validated,
             "llmUsed": True,
             "provider": llm_info.get("provider"),
             "model": llm_info.get("model"),
