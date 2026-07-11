@@ -30,6 +30,11 @@ cleanup_report.md
 Thumbs.db
 .vscode/
 
+# Node / Playwright generated files
+node_modules/
+test-results/
+playwright-report/
+
 # Local backup snapshots
 _backup_before_perf_optimization_20260604/
 

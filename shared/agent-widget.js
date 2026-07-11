@@ -2,6 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "his_agent_widget_state_v1";
+  const VOICE_CLEAR_KEY = "hisAgentVoiceRecordClearedAtV1";
   const POSITION_KEY = "hisAgentWidgetPosition";
   const SIZE_KEY = "hisAgentWidgetSize";
   const TASK_STEPS_UI_KEY = "hisAgentTaskStepsUiV2";
@@ -76,6 +77,8 @@
     voiceSemanticMapping: null,
     voiceSemanticSuggestions: [],
     pendingVoicePlan: null,
+    voiceRecordUpdatedAt: 0,
+    voiceRecordClearedAt: 0,
     recentTaskPanelMinimized: false,
     recentTaskStepsExpanded: false,
     recentTaskPinnedTaskId: "",
@@ -86,6 +89,7 @@
   const VIEW_MODES = ["home", "chat", "voice", "status", "examples"];
 
   const state = Object.assign({}, DEFAULT_STATE, loadState());
+  applyPersistedVoiceClearToState();
   // A persisted "connected" value cannot prove that a scale-to-zero GPU is still warm.
   state.diarizationStatus = "not_activated";
   state.diarizationProvider = "disabled";
@@ -259,7 +263,43 @@
     return text;
   }
 
+  function readVoiceClearTimestamp() {
+    try {
+      return Math.max(0, Number(window.localStorage.getItem(VOICE_CLEAR_KEY) || 0));
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  function applyPersistedVoiceClearToState() {
+    const clearedAt = readVoiceClearTimestamp();
+    const updatedAt = Math.max(0, Number(state.voiceRecordUpdatedAt || 0));
+    if (!clearedAt || clearedAt <= updatedAt) {
+      return false;
+    }
+    state.speakerTurns = [];
+    state.voiceSessionEnded = false;
+    state.voiceTurnsFrozen = false;
+    state.voiceSemanticMapping = null;
+    state.voiceSemanticSuggestions = [];
+    state.pendingVoicePlan = null;
+    state.voiceRecordClearedAt = clearedAt;
+    state.voiceRecordUpdatedAt = clearedAt;
+    return true;
+  }
+
+  function markVoiceRecordUpdated() {
+    const next = Math.max(
+      Date.now(),
+      Number(state.voiceRecordUpdatedAt || 0) + 1,
+      readVoiceClearTimestamp() + 1
+    );
+    state.voiceRecordUpdatedAt = next;
+    return next;
+  }
+
   function saveState() {
+    applyPersistedVoiceClearToState();
     const serializable = {
       open: state.open,
       agentSessionId: state.agentSessionId,
@@ -290,6 +330,8 @@
       voiceSemanticMapping: state.voiceSemanticMapping || null,
       voiceSemanticSuggestions: Array.isArray(state.voiceSemanticSuggestions) ? state.voiceSemanticSuggestions.slice(-20) : [],
       pendingVoicePlan: state.pendingVoicePlan || null,
+      voiceRecordUpdatedAt: Math.max(0, Number(state.voiceRecordUpdatedAt || 0)),
+      voiceRecordClearedAt: Math.max(0, Number(state.voiceRecordClearedAt || 0)),
       recentTaskPanelMinimized: Boolean(state.recentTaskPanelMinimized),
       recentTaskStepsExpanded: Boolean(state.recentTaskStepsExpanded),
       recentTaskPinnedTaskId: state.recentTaskPinnedTaskId || "",
@@ -950,7 +992,9 @@
     }
     elements.mockTurnsButton.addEventListener("click", fillMockTurns);
     elements.swapRolesButton.addEventListener("click", swapTurnRoles);
-    elements.clearTurnsButton.addEventListener("click", clearVoiceTurns);
+    elements.clearTurnsButton.addEventListener("click", function () {
+      void clearVoiceTurns();
+    });
     elements.checkConnectionButton.addEventListener("click", checkBackendConnection);
     elements.openHistoryButton.addEventListener("click", openAgentHistory);
     elements.statusRefreshButton.addEventListener("click", showConnectionTopic);
@@ -988,7 +1032,7 @@
           await openVisitSession();
           return;
         }
-        if (runtime.recording && runtime.voiceMode === "session") {
+        if (isVoiceCaptureActive("session")) {
           await stopActiveVoice("leave_voice_tab");
         }
         setActiveTab(button.dataset.agentTab);
@@ -1001,6 +1045,7 @@
       renderTopicCarousel();
     });
     window.addEventListener("his-agent-task-progress", handleTaskProgress);
+    window.addEventListener("storage", handleAgentStorageEvent);
     window.addEventListener("beforeunload", function () {
       saveScrollSnapshot("beforeunload");
       if (elements.input) {
@@ -1257,7 +1302,7 @@
     updateDiarizationActionButtons();
     setStatus("Stopping active Diart use and entering warm standby...");
     try {
-      if (runtime.recording && runtime.voiceMode === "session") {
+      if (isVoiceCaptureActive("session")) {
         await stopActiveVoice("manual_diart_stop");
       }
       state.diarizationStatus = "warming";
@@ -1523,7 +1568,7 @@
   }
 
   async function toggleOpen() {
-    if (state.open && runtime.recording) {
+    if (state.open && isVoiceCaptureActive()) {
       await stopActiveVoice("panel_close");
     }
     state.open = !state.open;
@@ -1617,7 +1662,7 @@
   }
 
   async function returnToHomeView() {
-    if (runtime.recording && runtime.voiceMode === "session") {
+    if (isVoiceCaptureActive("session")) {
       await stopActiveVoice("leave_voice_view");
     }
     state.viewMode = "home";
@@ -1647,7 +1692,7 @@
   }
 
   async function openVisitSession() {
-    if (runtime.recording && runtime.voiceMode === "dictation") {
+    if (isVoiceCaptureActive("dictation")) {
       await stopActiveVoice("switch_to_visit_session");
       setStatus("Stopped main-input voice and entered Visit Session.");
     }
@@ -3538,7 +3583,7 @@
       return;
     }
     const route = routeCurrentInput(command, "text_task");
-    if (runtime.recording) {
+    if (isVoiceCaptureActive()) {
       await stopActiveVoice("send");
     }
     setActiveTab("agent");
@@ -3711,18 +3756,18 @@
   }
 
   async function startVoiceTask() {
-    if (runtime.recording && runtime.voiceMode === "session") {
+    if (isVoiceCaptureActive("session")) {
       setStatus("A Visit Session voice task is already running.");
       return;
     }
-    if (runtime.recording && runtime.voiceMode === "dictation") {
+    if (isVoiceCaptureActive("dictation")) {
       await stopActiveVoice("switch_to_visit_recording");
     }
     await startSessionVoice();
   }
 
   async function stopVoiceTask() {
-    if (runtime.recording && runtime.voiceMode === "session") {
+    if (isVoiceCaptureActive("session")) {
       await stopActiveVoice("stop_session");
       setStatus(state.voiceSessionEnded ? "Voice task stopped. Click End Conversation and Organize Task to generate an Agent task for confirmation." : "Voice task stopped.");
       return;
@@ -3731,7 +3776,7 @@
   }
 
   async function endVoiceConversationAndDraftTask() {
-    if (runtime.recording) {
+    if (isVoiceCaptureActive()) {
       await stopActiveVoice("draft_voice_task");
     }
     setStatus("Finalizing Doctor/Patient roles from the complete conversation...");
@@ -4117,6 +4162,7 @@
     runtime.semanticRoleMapping.frozen = false;
     runtime.semanticRoleMapping.stopped = true;
     runtime.lastAsrEvent = { type: "example_visit", source: "example_visit", timestamp: new Date().toISOString() };
+    markVoiceRecordUpdated();
     renderTurns();
     saveState();
     setVoiceActionAvailability();
@@ -4146,13 +4192,31 @@
     setStatus("Doctor/Patient roles swapped.");
   }
 
-  function clearVoiceTurns() {
+  async function clearVoiceTurns(options) {
+    const settings = options && typeof options === "object" ? options : {};
+    await stopActiveVoice("clear_voice_record");
+    const clearedVoice = window.HisVoiceInputController && typeof window.HisVoiceInputController.clearSessionData === "function"
+      ? window.HisVoiceInputController.clearSessionData()
+      : null;
+    if (clearedVoice) {
+      syncVoiceState(clearedVoice);
+    }
     state.speakerTurns = [];
     state.voiceSessionEnded = false;
     state.voiceTurnsFrozen = false;
     state.voiceSemanticMapping = null;
     state.voiceSemanticSuggestions = [];
     state.pendingVoicePlan = null;
+    const clearedAt = Math.max(Date.now(), Number(settings.clearAt || 0));
+    state.voiceRecordClearedAt = clearedAt;
+    state.voiceRecordUpdatedAt = clearedAt;
+    if (settings.broadcast !== false) {
+      try {
+        window.localStorage.setItem(VOICE_CLEAR_KEY, String(clearedAt));
+      } catch (error) {
+        console.warn("[AgentWidget] unable to broadcast voice record clear", error);
+      }
+    }
     runtime.semanticRoleMapping.initialized = false;
     runtime.semanticRoleMapping.inFlight = false;
     runtime.semanticRoleMapping.lastMappedAt = 0;
@@ -4169,10 +4233,27 @@
     runtime.semanticRoleMapping.activePromise = null;
     runtime.lastAsrEvent = null;
     elements.voiceDraft.innerHTML = "";
+    transitionConversation("voice_idle", "clear_voice_record");
     renderTurns();
+    renderVoiceSessionStatus();
     setVoiceActionAvailability();
     saveState();
-    setStatus("Current voice record cleared.");
+    setStatus(settings.statusText || "Current voice record cleared.");
+  }
+
+  function handleAgentStorageEvent(event) {
+    if (!event || event.key !== VOICE_CLEAR_KEY) {
+      return;
+    }
+    const clearedAt = Math.max(0, Number(event.newValue || 0));
+    if (!clearedAt || clearedAt <= Number(state.voiceRecordClearedAt || 0)) {
+      return;
+    }
+    void clearVoiceTurns({
+      broadcast: false,
+      clearAt: clearedAt,
+      statusText: "Voice record cleared from another HIS page."
+    });
   }
 
   function normalizeLiveMicrophoneStatus(voice) {
@@ -4936,12 +5017,12 @@
   }
 
   async function toggleVoice() {
-    if (runtime.recording && runtime.voiceMode === "dictation") {
+    if (isVoiceCaptureActive("dictation")) {
       await stopActiveVoice("stop_dictation");
       setStatus("Voice Input stopped; transcript text was kept.");
       return;
     }
-    if (runtime.recording && runtime.voiceMode === "session") {
+    if (isVoiceCaptureActive("session")) {
       setStatus("Visit Session is recording. Click Stop Voice Task on the Visit Session page.", true);
       return;
     }
@@ -5018,6 +5099,7 @@
           });
           const beforeFinalCount = finalVoiceTurnsRaw().length;
           state.speakerTurns = mergeIncomingSpeakerTurns(state.speakerTurns, turns);
+          markVoiceRecordUpdated();
           renderTurns();
           setVoiceActionAvailability();
           saveState();
@@ -5046,9 +5128,24 @@
     }
   }
 
+  function isVoiceCaptureActive(mode) {
+    const controllerState = window.HisVoiceInputController && typeof window.HisVoiceInputController.getState === "function"
+      ? window.HisVoiceInputController.getState()
+      : {};
+    const controllerBusy = Boolean(
+      controllerState.recording ||
+      Number(controllerState.streamTrackCount || 0) > 0 ||
+      ["checking", "starting_diarization", "recording", "stopping"].indexOf(controllerState.voiceInputStatus) >= 0
+    );
+    const active = Boolean(runtime.recording || runtime.voiceStartInFlight || controllerBusy);
+    if (!active || !mode) return active;
+    return !runtime.voiceMode || runtime.voiceMode === mode;
+  }
+
   async function stopActiveVoice(reason) {
-    if (!window.HisVoiceInputController || !runtime.recording) {
+    if (!window.HisVoiceInputController || !isVoiceCaptureActive()) {
       runtime.recording = false;
+      runtime.voiceStartInFlight = false;
       runtime.voiceMode = "";
       updateVoiceButtons();
       return null;
@@ -5121,7 +5218,8 @@
         : "Start Voice Task";
     }
     if (elements.stopVoiceButton) {
-      elements.stopVoiceButton.disabled = !sessionRecording;
+      elements.stopVoiceButton.disabled = !sessionRecording && !runtime.voiceStartInFlight;
+      elements.stopVoiceButton.textContent = runtime.voiceStartInFlight ? "Cancel Start" : "Stop Voice Task";
     }
   }
 
@@ -5232,6 +5330,9 @@
       }
     });
     state.speakerTurns = state.speakerTurns.slice(-120);
+    if (incoming.length) {
+      markVoiceRecordUpdated();
+    }
   }
 
   function buildFallbackTurn(data, text) {
@@ -5789,7 +5890,7 @@
   }
 
   async function newSession() {
-    if (runtime.recording) {
+    if (isVoiceCaptureActive()) {
       await stopActiveVoice("new_session");
     }
     if (window.AgentTaskOrchestrator && window.AgentTaskOrchestrator.clearActiveTask) {

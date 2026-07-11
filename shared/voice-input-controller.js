@@ -54,6 +54,7 @@
     turnCounter: 0,
     partialTurnId: "",
     finalTurnSignatures: [],
+    startGeneration: 0,
     activeSettings: null
   };
 
@@ -243,6 +244,7 @@
 
   async function start(options) {
     const settings = options || {};
+    const startGeneration = ++runtime.startGeneration;
     runtime.activeSettings = settings;
     const useDiarization = settings.enableDiarization === true && settings.mode === "visit_session";
     runtime.sessionId = "voice_" + Date.now().toString(36);
@@ -278,6 +280,7 @@
     });
 
     const asrStatus = await checkAsrHealth(asrHealthUrl);
+    if (await finishCancelledStart(startGeneration)) return getState();
     emit({ asrStatus: asrStatus });
 
     if (asrStatus !== "connected") {
@@ -318,6 +321,7 @@
         message: "Diart is starting. A cold start can take tens of seconds; wait before speaking."
       });
       diarization = await checkDiarizationHealth(diarizationHealthUrl);
+      if (await finishCancelledStart(startGeneration)) return getState();
       emit({
         diarizationStatus: diarization.status,
         diarizationProvider: diarization.provider,
@@ -347,10 +351,12 @@
         if (state.recording) emit({ asrWebSocketStatus: "closed", voiceInputStatus: "failed", lastVoiceError: "asr_websocket_closed", message: "ASR service is disconnected; service health is tracked independently." });
       };
       await waitForWebSocketOpen(runtime.websocket);
+      if (await finishCancelledStart(startGeneration)) return getState();
       emit({ asrStatus: "connected", asrWebSocketStatus: "connected" });
 
       if (useDiarization) {
         const diarizationReady = await startDiarization(diarizationUrl, diarization);
+        if (await finishCancelledStart(startGeneration)) return getState();
         if (!diarizationReady) {
           await cleanup({ skipFinal: true });
           emit({
@@ -370,6 +376,7 @@
         message: "Requesting microphone permission..."
       });
       runtime.mediaStream = await requestUserMedia({ audio: true });
+      if (await finishCancelledStart(startGeneration)) return getState();
       emit({ permissionState: "granted", microphonePermission: "granted", microphoneStatus: "recording", voiceInputStatus: "recording", streamTrackCount: getStreamTrackCount(runtime.mediaStream), lastVoiceError: "", lastVoiceErrorName: "", lastVoiceErrorMessage: "", message: "Microphone connected; recording." });
       runtime.audioContext = new (window.AudioContext || window.webkitAudioContext)();
       runtime.source = runtime.audioContext.createMediaStreamSource(runtime.mediaStream);
@@ -401,12 +408,17 @@
       return getState();
     } catch (error) {
       await cleanup({ skipFinal: true });
+      if (startGeneration !== runtime.startGeneration) {
+        emit({ recording: false, voiceInputStatus: "idle", microphoneStatus: "idle", streamTrackCount: 0, message: "Voice input start cancelled." });
+        return getState();
+      }
       emit(Object.assign({ asrWebSocketStatus: "failed" }, normalizeMicrophoneError(error, capabilities)));
       return getState();
     }
   }
 
   async function stop(options) {
+    runtime.startGeneration += 1;
     stopMediaTracksNow();
     emit({
       recording: false,
@@ -418,6 +430,19 @@
     await cleanup(options || {});
     emit({ recording: false, voiceInputStatus: "idle", asrWebSocketStatus: "idle", message: "Voice input stopped.", asrStatus: state.asrStatus === "connected" ? "connected" : state.asrStatus });
     return getState();
+  }
+
+  async function finishCancelledStart(startGeneration) {
+    if (startGeneration === runtime.startGeneration) return false;
+    await cleanup({ skipFinal: true });
+    emit({
+      recording: false,
+      voiceInputStatus: "idle",
+      microphoneStatus: "idle",
+      streamTrackCount: 0,
+      message: "Voice input start cancelled."
+    });
+    return true;
   }
 
   async function cleanup(options) {
@@ -455,6 +480,37 @@
       microphoneStatus: "idle",
       streamTrackCount: 0
     });
+  }
+
+  function releaseVoiceResourcesForPageExit() {
+    runtime.startGeneration += 1;
+    stopMediaTracksNow();
+    if (runtime.processor) {
+      try { runtime.processor.disconnect(); } catch (error) {}
+    }
+    if (runtime.source) {
+      try { runtime.source.disconnect(); } catch (error) {}
+    }
+    if (runtime.websocket && runtime.websocket.readyState !== WebSocket.CLOSED) {
+      try { runtime.websocket.close(); } catch (error) {}
+    }
+    if (runtime.diarizationWebSocket && runtime.diarizationWebSocket.readyState !== WebSocket.CLOSED) {
+      try { runtime.diarizationWebSocket.close(); } catch (error) {}
+    }
+    if (runtime.audioContext) {
+      try { void runtime.audioContext.close(); } catch (error) {}
+    }
+    runtime.processor = null;
+    runtime.source = null;
+    runtime.mediaStream = null;
+    runtime.audioContext = null;
+    runtime.websocket = null;
+    runtime.diarizationWebSocket = null;
+    runtime.activeSettings = null;
+    state.recording = false;
+    state.voiceInputStatus = "idle";
+    state.microphoneStatus = "idle";
+    state.streamTrackCount = 0;
   }
 
   async function startDiarization(diarizationUrl, diarization) {
@@ -917,6 +973,21 @@
     };
   }
 
+  function clearSessionData() {
+    runtime.turnCounter = 0;
+    runtime.partialTurnId = "";
+    runtime.finalTurnSignatures = [];
+    emit({
+      transcript: "",
+      turns: [],
+      diarizationSegments: [],
+      message: state.recording
+        ? "Current voice record cleared; recording continues with a fresh transcript."
+        : "Current voice record cleared."
+    });
+    return getState();
+  }
+
   function fetchWithTimeout(url, options, timeoutMs) {
     const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     const timer = controller ? window.setTimeout(function () { controller.abort(); }, timeoutMs || 3000) : null;
@@ -1130,11 +1201,15 @@
     return output;
   }
 
+  window.addEventListener("pagehide", releaseVoiceResourcesForPageExit);
+  window.addEventListener("beforeunload", releaseVoiceResourcesForPageExit);
+
   updateVoiceDebug();
 
   window.HisVoiceInputController = {
     subscribe: subscribe,
     getState: getState,
+    clearSessionData: clearSessionData,
     checkStatus: checkStatus,
     checkMicrophonePermission: checkMicrophonePermission,
     setMicrophonePolicy: setMicrophonePolicy,
